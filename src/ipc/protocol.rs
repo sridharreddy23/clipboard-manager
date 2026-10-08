@@ -279,7 +279,10 @@ mod tests {
 
     #[test]
     fn the_line_limit_is_large_enough_for_a_real_search_but_still_bounded() {
-        assert!(MAX_LINE_BYTES >= 4096);
-        assert!(MAX_LINE_BYTES <= 1024 * 1024);
+        // Compared through a runtime binding: `assert!` on two constants is
+        // folded away at compile time and tests nothing.
+        let limit = MAX_LINE_BYTES;
+        assert!(limit >= 4096, "too small for a real search query: {limit}");
+        assert!(limit <= 1024 * 1024, "unbounded enough to be a memory risk: {limit}");
     }
 }

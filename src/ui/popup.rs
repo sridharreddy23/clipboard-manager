@@ -47,14 +47,30 @@ use crate::ui::{dialogs, selection, theme};
 /// which is the same bargain the Windows flyout makes (§46).
 const PAGE: usize = 200;
 
+// Rows are ~56px and the tallest configurable panel is 1000px, so ~18 rows are
+// visible. A page well above that keeps scrolling smooth without building
+// widgets for a 100k history (§46). Compile-time, so it cannot be folded away.
+const _: () = assert!(PAGE >= 100);
+
 /// Thumbnails cached in memory, keyed by blob hash.
 ///
 /// Bounded because the cache lives as long as the daemon: an unbounded one
 /// would be a slow leak for a user who copies a lot of screenshots.
 const THUMB_CACHE_LIMIT: usize = 96;
 
+// Unbounded would be a slow leak for a heavy screenshot user; unreasonably
+// large would defeat the point of bounding it at all.
+const _: () = assert!(THUMB_CACHE_LIMIT > 0 && THUMB_CACHE_LIMIT <= 256);
+
 /// Gap between the pointer and the panel's edge.
 const CURSOR_MARGIN: i32 = 12;
+
+/// Stands in for a section heading in the parallel `shown` list.
+///
+/// SQLite rowids start at 1 and are always positive, so no real entry can
+/// collide with this.
+const SECTION_SENTINEL: i64 = i64::MIN;
+const _: () = assert!(SECTION_SENTINEL < 1);
 
 /// Things the popup needs from the daemon, passed in rather than reached for so
 /// this type has no global state and can be constructed in a test.
@@ -436,11 +452,11 @@ impl Popup {
             if any_pinned {
                 if item.is_pinned && !pinned_header_done {
                     self.add_section_label("Pinned");
-                    shown.push(i64::MIN);
+                    shown.push(SECTION_SENTINEL);
                     pinned_header_done = true;
                 } else if !item.is_pinned && !unpinned_header_done {
                     self.add_section_label("Recent");
-                    shown.push(i64::MIN);
+                    shown.push(SECTION_SENTINEL);
                     unpinned_header_done = true;
                 }
             }
@@ -482,7 +498,7 @@ impl Popup {
     fn select_first_row(&self) {
         // Skip the section headings, which are not selectable.
         let shown = self.shown.borrow();
-        if let Some(index) = shown.iter().position(|id| *id != i64::MIN) {
+        if let Some(index) = shown.iter().position(|id| *id != SECTION_SENTINEL) {
             if let Some(row) = self.list.row_at_index(index as i32) {
                 self.list.select_row(Some(&row));
             }
@@ -490,7 +506,7 @@ impl Popup {
     }
 
     fn sync_empty_state(&self) {
-        let count = self.shown.borrow().iter().filter(|id| **id != i64::MIN).count();
+        let count = self.shown.borrow().iter().filter(|id| **id != SECTION_SENTINEL).count();
         let query = self.search.text().to_string();
         self.sync_empty_state_for(count, &query);
     }
@@ -811,7 +827,7 @@ impl Popup {
 
     fn focus_list(&self) {
         let shown = self.shown.borrow();
-        if let Some(index) = shown.iter().position(|id| *id != i64::MIN) {
+        if let Some(index) = shown.iter().position(|id| *id != SECTION_SENTINEL) {
             if let Some(row) = self.list.row_at_index(index as i32) {
                 self.list.select_row(Some(&row));
                 row.grab_focus();
@@ -827,7 +843,7 @@ impl Popup {
             .borrow()
             .get(index as usize)
             .copied()
-            .filter(|id| *id != i64::MIN)
+            .filter(|id| *id != SECTION_SENTINEL)
     }
 
     pub fn window(&self) -> &gtk::Window {
@@ -882,24 +898,5 @@ fn enable_transparency(window: &gtk::Window) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_page_size_is_large_enough_to_fill_a_tall_panel() {
-        // Rows are ~56px; the tallest configurable panel is 1000px, so ~18 rows
-        // are visible. A page well above that keeps scrolling smooth without
-        // building widgets for a 100k history (§46).
-        assert!(PAGE >= 100);
-    }
 
-    #[test]
-    fn the_thumbnail_cache_is_bounded() {
-        // Unbounded would be a slow leak for a heavy screenshot user.
-        assert!(THUMB_CACHE_LIMIT > 0 && THUMB_CACHE_LIMIT <= 256);
-    }
-
-    #[test]
-    fn section_headings_use_a_sentinel_no_real_row_can_collide_with() {
-        // Row ids are SQLite rowids, which start at 1 and are positive, so
-        // i64::MIN can never be a real entry.
-        assert!(i64::MIN < 0);
-    }
 }

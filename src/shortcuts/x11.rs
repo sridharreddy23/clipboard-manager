@@ -106,7 +106,7 @@ where
             // Checked, because a conflicting grab from another application is
             // reported asynchronously as a BadAccess error otherwise, and we
             // need to know now whether we actually hold the key.
-            match conn
+            let outcome = conn
                 .grab_key(
                     true, // report events relative to the grab window
                     root,
@@ -115,9 +115,12 @@ where
                     GrabMode::ASYNC,
                     GrabMode::ASYNC,
                 )
-                .and_then(|cookie| Ok(cookie.check()))
-            {
+                .map(|cookie| cookie.check());
+
+            match outcome {
                 Ok(Ok(())) => grabbed += 1,
+                // A conflicting grab from another application arrives here, as
+                // BadAccess from the checked request.
                 Ok(Err(err)) => {
                     first_error.get_or_insert(format!("{err}"));
                 }
@@ -228,16 +231,16 @@ fn run<F>(
 fn mod_mask(accel: &Accelerator) -> ModMask {
     let mut mask = ModMask::from(0u16);
     if accel.mods.ctrl {
-        mask = mask | ModMask::CONTROL;
+        mask |= ModMask::CONTROL;
     }
     if accel.mods.shift {
-        mask = mask | ModMask::SHIFT;
+        mask |= ModMask::SHIFT;
     }
     if accel.mods.alt {
-        mask = mask | ModMask::M1;
+        mask |= ModMask::M1;
     }
     if accel.mods.superkey {
-        mask = mask | ModMask::M4;
+        mask |= ModMask::M4;
     }
     mask
 }
@@ -252,7 +255,7 @@ fn lock_combinations() -> Vec<ModMask> {
         let mut mask = ModMask::from(0u16);
         for (index, modifier) in LOCK_MODIFIERS.iter().enumerate() {
             if bits & (1 << index) != 0 {
-                mask = mask | *modifier;
+                mask |= *modifier;
             }
         }
         out.push(mask);

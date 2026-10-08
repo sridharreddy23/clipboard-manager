@@ -84,12 +84,21 @@ pub const EXPORT_WARNING: &str = "This file contains your clipboard history in p
 impl Store {
     /// Run a full maintenance pass.
     pub fn maintain(&mut self, settings: &Settings) -> Result<MaintenanceReport> {
-        let mut report = MaintenanceReport::default();
+        // Ordered deliberately: expire first, then trim to the count limit,
+        // and only then collect blobs, so the collection sees every row the
+        // earlier two steps removed.
+        let expired = self.expire_old(settings.clipboard.retention_days)?;
+        let trimmed = self.enforce_history_limit(settings.clipboard.max_history)?;
+        let blobs_collected = self.collect_orphan_blobs()?;
+        let temporaries_removed = self.blobs().sweep_temporaries()?;
 
-        report.expired = self.expire_old(settings.clipboard.retention_days)?;
-        report.trimmed = self.enforce_history_limit(settings.clipboard.max_history)?;
-        report.blobs_collected = self.collect_orphan_blobs()?;
-        report.temporaries_removed = self.blobs().sweep_temporaries()?;
+        let mut report = MaintenanceReport {
+            expired,
+            trimmed,
+            blobs_collected,
+            temporaries_removed,
+            ..MaintenanceReport::default()
+        };
 
         // Only compact when there is something worth compacting. VACUUM
         // rewrites the whole file, so doing it on every pass would be exactly
@@ -665,7 +674,10 @@ mod tests {
             .conn()
             .execute("INSERT INTO clipboard_items_fts(clipboard_items_fts) VALUES('delete-all')", [])
             .unwrap();
-        assert!(store.search("ffmpeg", 10).unwrap().is_empty() || true);
+        // The index was destroyed and rebuilt; the point is that searching
+        // works at all afterwards rather than erroring, and that the row is
+        // findable again.
+        assert_eq!(store.search("ffmpeg", 10).unwrap().len(), 1);
 
         store.rebuild_search_index().unwrap();
         assert_eq!(store.search("ffmpeg", 10).unwrap().len(), 1);

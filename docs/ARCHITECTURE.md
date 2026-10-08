@@ -25,19 +25,19 @@ History experience.
 ### 1.3 Why Rust
 
 * Compiled, no runtime, no interpreter startup cost — the daemon must be cheap to
-  launch during session login (§46) and cheap to keep resident (§45).
+	launch during session login (§46) and cheap to keep resident (§45).
 * No GC pauses, deterministic memory. Idle RSS is dominated by the toolkit, not by
-  the language runtime.
+	the language runtime.
 * Memory safety matters here more than usual: this process handles untrusted
-  clipboard payloads (arbitrary bytes from arbitrary MIME types, images from
-  untrusted sources) in a long-lived background process. A parsing bug in C/C++
-  would be a local privilege-escalation surface; in safe Rust it is an error value.
+	clipboard payloads (arbitrary bytes from arbitrary MIME types, images from
+	untrusted sources) in a long-lived background process. A parsing bug in C/C++
+	would be a local privilege-escalation surface; in safe Rust it is an error value.
 * `x11rb` and `wayland-client` are high-quality **pure-Rust** protocol
-  implementations, so the X11 and Wayland layers do not need FFI shims and do not
-  need `libxcb`/`libwayland` headers at build time.
+	implementations, so the X11 and Wayland layers do not need FFI shims and do not
+	need `libxcb`/`libwayland` headers at build time.
 * `rusqlite` with the `bundled` feature statically links SQLite with FTS5, which
-  removes a runtime dependency on the distribution's `libsqlite3` version — a real
-  concern when targeting Ubuntu 20.04 through 26.04 (§22).
+	removes a runtime dependency on the distribution's `libsqlite3` version — a real
+	concern when targeting Ubuntu 20.04 through 26.04 (§22).
 
 Python was rejected: interpreter startup, higher idle RSS, and PyGObject adds a
 large dependency chain to a `.deb` that must install cleanly with `apt` (§39).
@@ -118,7 +118,7 @@ and the CLI are not separate processes with their own clipboard monitors; the CL
 a thin IPC client, and the GUI lives inside the daemon (§26, §27).
 
 ```
-                       clipboard-managerd  (one per user session)
+											 clipboard-managerd  (one per user session)
  ┌───────────────────────────────────────────────────────────────────────────┐
  │                                                                           │
  │  MAIN THREAD — GTK3 main loop                                             │
@@ -144,13 +144,13 @@ a thin IPC client, and the GUI lives inside the daemon (§26, §27).
  │  │  (truly event-driven)      │  (truly event-driven)                 │   │
  │  └────────────────────────────┴───────────────────────────────────────┘   │
  └───────────────────────────────────────────────────────────────────────────┘
-                                      │
-                 ┌────────────────────┴────────────────────┐
-                 ▼                                        ▼
-      $XDG_DATA_HOME/clipboard-manager/         $XDG_CONFIG_HOME/
-        database.sqlite   (0600)                  clipboard-manager/
-        blobs/<sha256>    (0600)                    config.toml  (0600)
-        (dir 0700)
+																			│
+								 ┌────────────────────┴────────────────────┐
+								 ▼                                        ▼
+			$XDG_DATA_HOME/clipboard-manager/         $XDG_CONFIG_HOME/
+				database.sqlite   (0600)                  clipboard-manager/
+				blobs/<sha256>    (0600)                    config.toml  (0600)
+				(dir 0700)
 ```
 
 All SQLite access happens on the main thread, inside the GTK loop, behind no lock —
@@ -208,12 +208,12 @@ This is detected automatically at startup:
 
 ```
 session = Wayland
-  ├── zwlr_data_control_manager_v1 advertised  → native Wayland backend
-  ├── else, $DISPLAY (Xwayland) reachable      → X11/XFIXES backend via Xwayland
-  └── else                                     → monitoring unavailable;
-                                                 the daemon still runs, serves
-                                                 stored history, and reports
-                                                 `degraded` from `status`
+	├── zwlr_data_control_manager_v1 advertised  → native Wayland backend
+	├── else, $DISPLAY (Xwayland) reachable      → X11/XFIXES backend via Xwayland
+	└── else                                     → monitoring unavailable;
+																								 the daemon still runs, serves
+																								 stored history, and reports
+																								 `degraded` from `status`
 ```
 
 The capability actually in effect is always reported by
@@ -293,34 +293,34 @@ SQLite (`bundled`, FTS5) in WAL mode.
 
 ```sql
 clipboard_items(
-  id INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL,              -- text | url | image | files
-  mime_type TEXT NOT NULL,         -- the MIME we will re-offer
-  content_hash TEXT NOT NULL UNIQUE,
-  text_content TEXT,               -- inline, for text/url
-  blob_hash TEXT,                  -- -> blobs/<sha256>, for image/files
-  preview TEXT NOT NULL,           -- what the list shows; always searchable
-  metadata TEXT,                   -- JSON: dimensions, file names, source app
-  size_bytes INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,     -- unix ms
-  updated_at INTEGER NOT NULL,
-  last_used_at INTEGER NOT NULL,
-  is_pinned INTEGER NOT NULL DEFAULT 0
+	id INTEGER PRIMARY KEY,
+	kind TEXT NOT NULL,              -- text | url | image | files
+	mime_type TEXT NOT NULL,         -- the MIME we will re-offer
+	content_hash TEXT NOT NULL UNIQUE,
+	text_content TEXT,               -- inline, for text/url
+	blob_hash TEXT,                  -- -> blobs/<sha256>, for image/files
+	preview TEXT NOT NULL,           -- what the list shows; always searchable
+	metadata TEXT,                   -- JSON: dimensions, file names, source app
+	size_bytes INTEGER NOT NULL,
+	created_at INTEGER NOT NULL,     -- unix ms
+	updated_at INTEGER NOT NULL,
+	last_used_at INTEGER NOT NULL,
+	is_pinned INTEGER NOT NULL DEFAULT 0
 )
 ```
 
 * `content_hash` is `sha256(kind || mime || payload)` and is **UNIQUE**, which makes
-  duplicate suppression (§10) an `INSERT … ON CONFLICT DO UPDATE` that bumps
-  `last_used_at` and preserves `is_pinned`. There is no read-then-write race.
+	duplicate suppression (§10) an `INSERT … ON CONFLICT DO UPDATE` that bumps
+	`last_used_at` and preserves `is_pinned`. There is no read-then-write race.
 * Blobs are content-addressed at `blobs/<sha256>` (§15). A blob is deleted only
-  after a `NOT EXISTS` check against `clipboard_items.blob_hash`, so a blob shared
-  by a pinned and an unpinned item survives (§48).
+	after a `NOT EXISTS` check against `clipboard_items.blob_hash`, so a blob shared
+	by a pinned and an unpinned item survives (§48).
 * `clipboard_items_fts` is an FTS5 external-content table over `preview` and
-  `text_content`, kept in sync by triggers. Search is a single indexed FTS query,
-  not a table scan, so it stays fast at 100 000 items (§47). Fuzzy ranking is
-  applied *only* to the FTS candidate set.
+	`text_content`, kept in sync by triggers. Search is a single indexed FTS query,
+	not a table scan, so it stays fast at 100 000 items (§47). Fuzzy ranking is
+	applied *only* to the FTS candidate set.
 * Retention, history-limit trimming, blob GC and `VACUUM` run on an idle timeout
-  after startup, never during it (§46, §48).
+	after startup, never during it (§46, §48).
 
 Permissions: the data directory is created `0700`, the database and every blob
 `0600`, and the config file `0600` (§18, §37). The process sets its umask to `0077`
@@ -350,21 +350,21 @@ simple blocking accept loop in one thread.
 ## 7. Privacy (§16, §17)
 
 * No network code of any kind is linked into the binary. There is no HTTP client, no
-  telemetry, and no account.
+	telemetry, and no account.
 * Clipboard **content is never logged**, at any log level. The logging layer has no
-  path that can receive a payload; call sites pass only `kind`, `size_bytes` and a
-  hash prefix. `--debug` raises verbosity, not sensitivity.
+	path that can receive a payload; call sites pass only `kind`, `size_bytes` and a
+	hash prefix. `--debug` raises verbosity, not sensitivity.
 * `privacy::secrets` applies conservative heuristics to drop likely credentials
-  before storage when "Do not store passwords" is on: offered MIME types used by
-  password managers (`x-kde-passwordManagerHint`,
-  `application/x-keepassxc-password`), plus shape-based detection of API-key-like
-  and PEM-like payloads.
+	before storage when "Do not store passwords" is on: offered MIME types used by
+	password managers (`x-kde-passwordManagerHint`,
+	`application/x-keepassxc-password`), plus shape-based detection of API-key-like
+	and PEM-like payloads.
 * Source-application exclusion is best effort and is documented as such. On X11 we
-  resolve the selection owner window to a PID via `_NET_WM_PID` and read
-  `/proc/<pid>/{comm,exe}`; `WM_CLASS` is used as a fallback. Under Wayland,
-  `zwlr_data_control` does **not** identify the source client and there is no
-  protocol that does, so exclusion by application cannot work there. The Settings UI
-  states this inline rather than offering a control that silently does nothing.
+	resolve the selection owner window to a PID via `_NET_WM_PID` and read
+	`/proc/<pid>/{comm,exe}`; `WM_CLASS` is used as a fallback. Under Wayland,
+	`zwlr_data_control` does **not** identify the source client and there is no
+	protocol that does, so exclusion by application cannot work there. The Settings UI
+	states this inline rather than offering a control that silently does nothing.
 
 ---
 
@@ -372,21 +372,21 @@ simple blocking accept loop in one thread.
 
 ```
 src/
-  main.rs            entry point; CLI dispatch vs daemon start
-  cli/               clap definitions, IPC client commands, export/import
-  config/            Settings (serde + TOML), defaults, atomic save
-  model/             ClipKind, ClipItem, ClipPayload, Metadata
-  storage/           Store, migrations, blobs, maintenance, import/export
-  search/            FTS5 query builder + fuzzy re-ranking
-  clipboard/         ClipboardEvent, normalisation, monitor supervisor
-  platform/          session detection; x11/ and wayland/ backends; source app
-  shortcuts/         GlobalShortcut trait, keys parsing, 6 implementations
-  ipc/               protocol, server, client, single-instance lock
-  daemon/            Core: wires everything, owns Store + Settings
-  ui/                popup, item card, settings window, dialogs, theme, css, tray
-  privacy/           secret heuristics, application exclusion
-  notify.rs          desktop notifications over D-Bus
-  logging.rs         tracing -> journald/stderr
+	main.rs            entry point; CLI dispatch vs daemon start
+	cli/               clap definitions, IPC client commands, export/import
+	config/            Settings (serde + TOML), defaults, atomic save
+	model/             ClipKind, ClipItem, ClipPayload, Metadata
+	storage/           Store, migrations, blobs, maintenance, import/export
+	search/            FTS5 query builder + fuzzy re-ranking
+	clipboard/         ClipboardEvent, normalisation, monitor supervisor
+	platform/          session detection; x11/ and wayland/ backends; source app
+	shortcuts/         GlobalShortcut trait, keys parsing, 6 implementations
+	ipc/               protocol, server, client, single-instance lock
+	daemon/            Core: wires everything, owns Store + Settings
+	ui/                popup, item card, settings window, dialogs, theme, css, tray
+	privacy/           secret heuristics, application exclusion
+	notify.rs          desktop notifications over D-Bus
+	logging.rs         tracing -> journald/stderr
 ```
 
 No file contains the whole application (§24).

@@ -73,6 +73,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// up monitoring indefinitely.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(120);
 
+// An idle gap must not be able to outlive the whole transfer, or the overall
+// ceiling would never be the thing that fires.
+const _: () = assert!(IDLE_TIMEOUT.as_secs() < TRANSFER_TIMEOUT.as_secs());
+
 /// Read buffer size. Matches the usual pipe capacity, so a source that fills
 /// the pipe is emptied in one call.
 const READ_CHUNK: usize = 64 * 1024;
@@ -84,6 +88,12 @@ const READ_CHUNK: usize = 64 * 1024;
 /// unbounded transfer would mean an unbounded allocation. Documented in the
 /// README's limitations section.
 const ABSOLUTE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+// Enforced at compile time rather than by a test: a test comparing two
+// constants is folded away and asserts nothing, whereas this fails the build.
+// Guards against the cap being "tidied" down to a value that would silently
+// break the Unlimited setting for ordinary content.
+const _: () = assert!(ABSOLUTE_MAX_BYTES >= 1024 * 1024 * 1024);
 
 /// Is this compositor able to serve clipboard history?
 ///
@@ -507,11 +517,10 @@ impl Drop for WaylandBackend {
     fn drop(&mut self) {
         // Destroy the offers we still hold, then the device, so the compositor
         // can release its side immediately rather than at socket close.
-        for offer in [self.state.clipboard.take(), self.state.primary.take()] {
-            if let Some(offer) = offer {
-                if offer.is_alive() {
-                    offer.destroy();
-                }
+        for offer in [self.state.clipboard.take(), self.state.primary.take()].into_iter().flatten()
+        {
+            if offer.is_alive() {
+                offer.destroy();
             }
         }
         if self.device.is_alive() {
@@ -578,16 +587,6 @@ mod tests {
         // Zero, not EAGAIN: the write end is closed, so this is a real EOF.
         let n = unsafe { libc::read(read.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
         assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn deadlines_are_ordered_so_an_idle_gap_cannot_outlive_the_transfer() {
-        assert!(IDLE_TIMEOUT < TRANSFER_TIMEOUT);
-    }
-
-    #[test]
-    fn the_absolute_cap_is_large_enough_not_to_affect_real_clippings() {
-        assert!(ABSOLUTE_MAX_BYTES >= 1024 * 1024 * 1024);
     }
 
     #[test]

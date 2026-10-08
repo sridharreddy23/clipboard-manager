@@ -385,8 +385,8 @@ mod tests {
     #[test]
     fn total_bytes_sums_all_blobs() {
         let (_tmp, store) = store();
-        store.put(&vec![0u8; 100]).unwrap();
-        store.put(&vec![1u8; 250]).unwrap();
+        store.put(&[0u8; 100]).unwrap();
+        store.put(&[1u8; 250]).unwrap();
         assert_eq!(store.total_bytes().unwrap(), 350);
     }
 }

@@ -237,7 +237,7 @@ impl Appearance {
     pub const PREVIEW_RANGE: (u32, u32) = (40, 1000);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Advanced {
     /// Override for the data directory. `None` uses the XDG default.
@@ -248,15 +248,8 @@ pub struct Advanced {
     pub activate_action: ActivateAction,
 }
 
-impl Default for Advanced {
-    fn default() -> Self {
-        Self {
-            storage_path: None,
-            debug_logging: false,
-            activate_action: ActivateAction::default(),
-        }
-    }
-}
+// Every field's own default is already what we want: no storage override,
+// quiet logging, and the safe copy-and-close activation (§51).
 
 /// The complete settings document.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

@@ -80,10 +80,20 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(10);
 /// one-byte chunks cannot occupy the monitor forever.
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(120);
 
+// Ordered so that a per-chunk stall fires before the overall ceiling, and a
+// missing first reply fires before either.
+const _: () = assert!(CHUNK_TIMEOUT.as_secs() < TRANSFER_TIMEOUT.as_secs());
+const _: () = assert!(REPLY_TIMEOUT.as_secs() <= CHUNK_TIMEOUT.as_secs());
+
 /// Bytes requested per `GetProperty` round trip (expressed in 32-bit words, as
 /// the protocol requires). 256 KiB keeps the number of round trips for a large
 /// image small without building an enormous reply.
 const CHUNK_WORDS: u32 = 64 * 1024;
+
+// The maximum length of an X11 request without BIG-REQUESTS is 2^16 words, and
+// a GetProperty reply must fit the server's reply limit; 64 Ki words (256 KiB)
+// is the conventional safe chunk.
+const _: () = assert!(CHUNK_WORDS <= 64 * 1024);
 
 /// Upper bound on a single clipping, applied even when the user has chosen
 /// "Unlimited" for the size limit.
@@ -93,6 +103,9 @@ const CHUNK_WORDS: u32 = 64 * 1024;
 /// that advertises a 3 GB selection would otherwise get the daemon OOM-killed.
 /// It is documented in the README's limitations section.
 const ABSOLUTE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+// Compile-time, so a bad edit fails the build rather than a folded-away test.
+const _: () = assert!(ABSOLUTE_MAX_BYTES >= 1024 * 1024 * 1024);
 
 /// Cap on events set aside while waiting for a transfer to complete. Reaching
 /// it would need hundreds of selection changes inside one transfer window.
@@ -745,25 +758,4 @@ impl Drop for X11Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_absolute_cap_is_large_enough_not_to_affect_real_clippings() {
-        // Guards against someone "tidying" the constant down to a value that
-        // would silently break the Unlimited setting for ordinary content.
-        assert!(ABSOLUTE_MAX_BYTES >= 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn chunk_size_is_a_whole_number_of_words_within_the_request_limit() {
-        // The maximum length of an X11 request without BIG-REQUESTS is 2^16
-        // words, and a GetProperty reply must fit the server's reply limit;
-        // 64 Ki words (256 KiB) is the conventional safe chunk.
-        assert!(CHUNK_WORDS <= 64 * 1024);
-    }
-
-    #[test]
-    fn deadlines_are_ordered_so_a_chunk_cannot_outlive_the_transfer() {
-        assert!(CHUNK_TIMEOUT < TRANSFER_TIMEOUT);
-        assert!(REPLY_TIMEOUT <= CHUNK_TIMEOUT);
-    }
 }

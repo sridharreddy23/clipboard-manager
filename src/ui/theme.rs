@@ -31,6 +31,11 @@ const STYLE: &str = include_str!("style.css");
 /// `~/.config/gtk-3.0/gtk.css` can still override us.
 const PRIORITY: u32 = 700;
 
+// GTK's application priority is 600 and the user's own gtk.css is 800. Outside
+// that window either a distribution theme beats us, or we beat the user's
+// explicit overrides. Enforced at compile time.
+const _: () = assert!(PRIORITY > 600 && PRIORITY < 800);
+
 /// What we resolved the preference to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolved {
@@ -231,10 +236,4 @@ mod tests {
         assert_eq!(unwrap_variants(wrapped).get::<u32>(), Some(1));
     }
 
-    #[test]
-    fn our_provider_sits_between_the_application_and_user_priorities() {
-        // Application = 600, user = 800. Being outside that window would mean
-        // either a theme beats us or we beat the user's own gtk.css.
-        assert!(PRIORITY > 600 && PRIORITY < 800);
-    }
 }

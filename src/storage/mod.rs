@@ -448,11 +448,10 @@ impl Store {
 
     pub fn get(&self, id: i64) -> Result<Option<ClipItem>> {
         let sql = format!("SELECT {ITEM_COLUMNS} FROM clipboard_items WHERE id = ?1");
-        Ok(self
-            .conn
+        self.conn
             .query_row(&sql, [id], row_to_item)
             .optional()
-            .context("failed to read history entry")?)
+            .context("failed to read history entry")
     }
 
     pub fn get_by_hash(&self, content_hash: &str) -> Result<Option<ClipItem>> {

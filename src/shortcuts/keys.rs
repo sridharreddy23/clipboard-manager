@@ -476,9 +476,9 @@ mod tests {
     fn the_default_shortcut_round_trips_through_every_dialect() {
         let accel = Accelerator::parse(crate::config::DEFAULT_SHORTCUT).unwrap();
 
-        assert_eq!(accel.mods.ctrl, true);
-        assert_eq!(accel.mods.shift, false, "the default must not be Ctrl+Shift+`");
-        assert_eq!(accel.mods.superkey, false, "the default must not be Super+V");
+        assert!(accel.mods.ctrl);
+        assert!(!accel.mods.shift, "the default must not be Ctrl+Shift+`");
+        assert!(!accel.mods.superkey, "the default must not be Super+V");
         assert_eq!(accel.key, "grave");
 
         assert_eq!(accel.to_config(), "Ctrl+grave");

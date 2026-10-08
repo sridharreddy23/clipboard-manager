@@ -45,6 +45,9 @@ enum Urgency {
 /// Shortest gap between two "too large" notifications.
 const RATE_LIMIT: Duration = Duration::from_secs(30);
 
+// Long enough to cover a multi-file copy, which is the case this exists for.
+const _: () = assert!(RATE_LIMIT.as_secs() >= 5);
+
 thread_local! {
     /// When the last rate-limited notification went out. Thread-local because
     /// notifications are only ever sent from the GTK main thread, so this needs
@@ -84,7 +87,20 @@ pub fn shortcut_failed(message: &str) {
 
 /// A clipping was rejected. Rate-limited.
 pub fn clipping_dropped(reason: &str) {
-    let allowed = LAST_SIZE_WARNING.with(|last| {
+    if !rate_limit_allows() {
+        tracing::debug!(reason, "suppressed a repeat notification");
+        return;
+    }
+    send("Clipboard item not saved", reason, Urgency::Normal);
+}
+
+/// Should a rate-limited notification go out now?
+///
+/// Records the time when it returns `true`, so callers must not call this
+/// speculatively. Factored out so the test exercises the real limiter rather
+/// than a copy of its logic.
+fn rate_limit_allows() -> bool {
+    LAST_SIZE_WARNING.with(|last| {
         let mut last = last.borrow_mut();
         let now = Instant::now();
         match *last {
@@ -94,13 +110,7 @@ pub fn clipping_dropped(reason: &str) {
                 true
             }
         }
-    });
-
-    if !allowed {
-        tracing::debug!(reason, "suppressed a repeat notification");
-        return;
-    }
-    send("Clipboard item not saved", reason, Urgency::Normal);
+    })
 }
 
 /// Storage is failing — the one case the user really must know about, because
@@ -169,33 +179,19 @@ mod tests {
 
     #[test]
     fn repeat_size_warnings_are_suppressed() {
-        // Copying a folder of large files must not produce a notification per
-        // file. These calls reach `send`, which no-ops without a notification
-        // daemon, so the test is really about the rate limiter's bookkeeping.
+        // Copying a folder of large files must not produce one notification
+        // per file (§36). Exercises the real limiter, not a copy of it.
         LAST_SIZE_WARNING.with(|last| *last.borrow_mut() = None);
 
-        let allowed_once = LAST_SIZE_WARNING.with(|last| {
-            let mut last = last.borrow_mut();
-            let now = Instant::now();
-            let allowed = match *last {
-                Some(previous) if now.duration_since(previous) < RATE_LIMIT => false,
-                _ => {
-                    *last = Some(now);
-                    true
-                }
-            };
-            allowed
-        });
-        assert!(allowed_once, "the first warning must get through");
+        assert!(rate_limit_allows(), "the first warning must get through");
+        assert!(!rate_limit_allows(), "an immediate repeat must be suppressed");
+        assert!(!rate_limit_allows(), "and so must the one after that");
 
-        let allowed_again = LAST_SIZE_WARNING.with(|last| {
-            let last = last.borrow();
-            match *last {
-                Some(previous) => Instant::now().duration_since(previous) >= RATE_LIMIT,
-                None => true,
-            }
-        });
-        assert!(!allowed_again, "an immediate repeat must be suppressed");
+        // Pretending the last one was long enough ago lets the next through,
+        // so the limiter is a window rather than a one-shot latch.
+        LAST_SIZE_WARNING
+            .with(|last| *last.borrow_mut() = Some(Instant::now() - RATE_LIMIT * 2));
+        assert!(rate_limit_allows(), "a warning after the window must get through");
     }
 
     #[test]
@@ -219,10 +215,5 @@ mod tests {
         // by some daemons and rejected by others.
         assert_eq!(Urgency::Low as u8, 0);
         assert_eq!(Urgency::Normal as u8, 1);
-    }
-
-    #[test]
-    fn the_rate_limit_is_long_enough_to_cover_a_multi_file_copy() {
-        assert!(RATE_LIMIT >= Duration::from_secs(5));
     }
 }

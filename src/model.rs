@@ -446,12 +446,10 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-    let mut count = 0usize;
-    for (idx, _) in s.char_indices() {
+    for (count, (idx, _)) in s.char_indices().enumerate() {
         if count == max {
             return format!("{}…", &s[..idx]);
         }
-        count += 1;
     }
     s.to_string()
 }

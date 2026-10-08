@@ -97,7 +97,11 @@ impl Payload {
             } else {
                 // text/uri-list is CRLF-terminated per RFC 2483; the GNOME
                 // variant is LF-separated with a leading operation verb.
-                let list = uris.iter().map(|u| format!("{u}\r\n")).collect::<String>();
+                let list = uris.iter().fold(String::new(), |mut acc, uri| {
+                    acc.push_str(uri);
+                    acc.push_str("\r\n");
+                    acc
+                });
                 let gnome = format!("copy\n{}", uris.join("\n"));
                 (Some(list), Some(gnome))
             }
