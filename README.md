@@ -118,7 +118,7 @@ Tested on:
 | Ubuntu 22.04 LTS | supported |
 | Ubuntu 24.04 LTS | supported |
 | Ubuntu 26.04 LTS | supported |
-| Debian 11 (bullseye) | supported |
+| Debian 11 (bullseye) | supported — but [end-of-life upstream](https://www.debian.org/releases/bullseye/), so its packages come from `archive.debian.org` |
 | Debian 12 (bookworm) | supported |
 | Debian 13 (trixie) | supported |
 

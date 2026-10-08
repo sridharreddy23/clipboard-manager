@@ -596,10 +596,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_running_user_is_not_root_in_a_normal_test_run() {
-        // Also documents the check: if this ever fails, the suite is being run
-        // as root, which is itself worth knowing.
-        assert!(refuse_to_run_as_root().is_ok(), "the test suite should not run as root");
+    fn running_as_root_is_refused_and_anything_else_is_allowed() {
+        // Asserts the *logic* against the real uid rather than asserting what
+        // the uid is. CI runs these in containers as root, where demanding a
+        // non-root uid would fail for reasons that say nothing about the code.
+        // SAFETY: `geteuid` takes no arguments and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        let outcome = refuse_to_run_as_root();
+
+        if euid == 0 {
+            let err = outcome.expect_err("root must be refused (§28)").to_string();
+            assert!(err.contains("must not run as root"), "{err}");
+            // The message has to tell the user what to do instead.
+            assert!(err.contains("sudo"), "{err}");
+        } else {
+            assert!(outcome.is_ok(), "a normal user must be allowed to run the daemon");
+        }
     }
 
     #[test]

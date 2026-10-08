@@ -42,6 +42,39 @@ jobs:
           - { name: "Debian 13", image: "debian:13" }
 
     steps:
+      # Debian releases past end-of-life are removed from deb.debian.org and
+      # moved to archive.debian.org, so a stock container's sources 404. The
+      # archive also stops refreshing Release files, which trips apt's
+      # Valid-Until check. Bullseye is in that state, and trixie will be one
+      # day, so this is keyed on reachability rather than on a version list.
+      - name: Repoint end-of-life Debian releases at the archive
+        run: |
+          set -eux
+          . /etc/os-release
+          if [ "${ID:-}" = "debian" ]; then
+            if ! apt-get update -qq 2>/dev/null; then
+              echo "deb.debian.org is incomplete for ${VERSION_CODENAME}; using archive.debian.org"
+              for list in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+                [ -e "$list" ] || continue
+                sed -i \
+                  -e 's|http://deb.debian.org|http://archive.debian.org|g' \
+                  -e 's|http://security.debian.org|http://archive.debian.org|g' \
+                  -e '/-updates/d' \
+                  "$list"
+              done
+              # deb822 format, used by trixie onwards.
+              for src in /etc/apt/sources.list.d/*.sources; do
+                [ -e "$src" ] || continue
+                sed -i \
+                  -e 's|http://deb.debian.org|http://archive.debian.org|g' \
+                  -e 's|http://security.debian.org|http://archive.debian.org|g' \
+                  "$src"
+              done
+              echo 'Acquire::Check-Valid-Until "false";' \
+                > /etc/apt/apt.conf.d/99-archive-no-valid-until
+            fi
+          fi
+
       - name: Install build dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
