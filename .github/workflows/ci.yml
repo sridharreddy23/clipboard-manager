@@ -20,6 +20,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Workflow-wide, not per step: environment variables do not carry between
+  # steps, and an unset DEBIAN_FRONTEND let `apt-get install` sit on an
+  # interactive debconf prompt until the job timed out.
+  DEBIAN_FRONTEND: noninteractive
   # Keep peak memory down: CI runners are small, and linking this dependency
   # tree at full parallelism is what kills them.
   CARGO_BUILD_JOBS: 2
@@ -29,6 +33,9 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
+    # Ubuntu 20.04 is the slowest target (oldest toolchain bootstrap); 45
+    # minutes is comfortable for it and still catches a genuine hang quickly.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +71,8 @@ jobs:
           PACKAGES="build-essential pkg-config libgtk-3-dev libdbus-1-dev
                     curl ca-certificates git
                     dpkg-dev fakeroot gzip
-                    xvfb xauth"
+                    xvfb xauth
+                    man-db"
 
           install_deps() {
             apt-get update
@@ -149,6 +157,7 @@ jobs:
       # the one place they can run unattended — and it is the only automated
       # check that the X11 backend really captures a selection.
       - name: Live platform tests under Xvfb
+        timeout-minutes: 10
         run: |
           xvfb-run --auto-servernum --server-args='-screen 0 1280x900x24' \
             cargo test --locked --test platform_live -- \
@@ -160,6 +169,7 @@ jobs:
           ./scripts/build-deb.sh --no-build
 
       - name: Verify the package installs and runs
+        timeout-minutes: 10
         run: |
           # The leading ./ is required. Without it apt treats the argument as
           # a package *name* and fails with "Unable to locate package
@@ -171,7 +181,13 @@ jobs:
           # command the README tells users to run, so it is what gets tested.
           apt-get install -y "$deb"
           clipboard-manager --version
-          man --warnings -l /usr/share/man/man1/clipboard-manager.1.gz >/dev/null
+          # Minimal Debian containers ship without man-db, so this is guarded
+          # rather than assumed. CI installs it, so in practice it does run.
+          if command -v man >/dev/null 2>&1; then
+            man --warnings -l /usr/share/man/man1/clipboard-manager.1.gz >/dev/null
+          else
+            echo "man is not installed; skipping the man page check"
+          fi
           # A clean uninstall matters as much as a clean install.
           apt-get remove -y clipboard-manager
 
