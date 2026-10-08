@@ -70,7 +70,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart={binary} --quiet
+ExecStart={binary}
 ExecReload=/bin/kill -HUP $MAINPID
 # Restart on crash so history keeps being recorded (§49), but not when the
 # daemon exits cleanly on `clipboard-manager quit` — otherwise quitting would
@@ -301,6 +301,76 @@ fn systemctl(args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pull the arguments out of the unit's `ExecStart=` line.
+    fn exec_start_args() -> Vec<String> {
+        let unit = service_unit();
+        let line = unit
+            .lines()
+            .find(|line| line.starts_with("ExecStart="))
+            .expect("the unit must have an ExecStart");
+        line.trim_start_matches("ExecStart=")
+            .split_whitespace()
+            .skip(1) // the binary path
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn every_argument_the_unit_passes_is_one_the_cli_accepts() {
+        // This is the test that was missing. The unit shipped with
+        // `ExecStart=... --quiet`, a flag invented in the template and never
+        // defined on the CLI, so clap exited 2 and systemd sat in a restart
+        // loop -- the service could never start, on any machine, ever.
+        //
+        // The unit is a format string that nothing parsed, so nothing caught
+        // it. Now its arguments go through the real parser.
+        use clap::Parser;
+
+        let mut argv = vec!["clipboard-manager".to_string()];
+        argv.extend(exec_start_args());
+
+        let parsed = crate::cli::Cli::try_parse_from(&argv);
+        assert!(
+            parsed.is_ok(),
+            "the unit passes arguments the CLI rejects: {:?}\n{}",
+            argv,
+            parsed.unwrap_err()
+        );
+
+        // And daemon mode specifically: a subcommand here would mean the
+        // service ran a one-shot client and exited instead of monitoring.
+        assert!(
+            parsed.unwrap().command.is_none(),
+            "the unit must start the daemon, not run a subcommand"
+        );
+    }
+
+    #[test]
+    fn the_desktop_entry_exec_line_is_also_a_valid_invocation() {
+        // Same failure mode, different file: the menu entry and both desktop
+        // actions are strings the shell runs verbatim.
+        use clap::Parser;
+
+        for entry in [desktop_entry(false), desktop_entry(true)] {
+            for line in entry.lines().filter(|l| l.starts_with("Exec=")) {
+                let mut argv = vec!["clipboard-manager".to_string()];
+                argv.extend(
+                    line.trim_start_matches("Exec=")
+                        .split_whitespace()
+                        .skip(1)
+                        // %U and friends are field codes the desktop expands,
+                        // not arguments we receive.
+                        .filter(|arg| !arg.starts_with('%'))
+                        .map(str::to_string),
+                );
+                assert!(
+                    crate::cli::Cli::try_parse_from(&argv).is_ok(),
+                    "{line:?} is not a valid invocation"
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_unit_never_runs_as_root_and_never_touches_the_network() {

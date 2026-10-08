@@ -112,7 +112,10 @@ fn gsettings_register(schema: &str, path_prefix: &str, accel: &Accelerator) -> R
     let relocatable = format!("{schema}.custom-keybinding");
     gsettings_set(&relocatable, &slot, "name", BINDING_NAME)?;
     gsettings_set(&relocatable, &slot, "command", &toggle_command())?;
-    gsettings_set(&relocatable, &slot, "binding", &accel.to_gsettings())?;
+    // `to_mutter`, not `to_gsettings`: GNOME and Cinnamon understand
+    // `Above_Tab`, which binds the key above Tab by position rather than by
+    // the character it happens to emit (§3).
+    gsettings_set(&relocatable, &slot, "binding", &accel.to_mutter())?;
 
     Ok(format!(
         "registered with the desktop as a custom keyboard shortcut running \

@@ -166,6 +166,43 @@ impl Accelerator {
         out
     }
 
+    /// The mutter spelling, for GNOME and Cinnamon.
+    ///
+    /// Identical to [`Self::to_gsettings`] except that `grave` becomes
+    /// `Above_Tab`. That is mutter's own pseudo-keysym for "the key physically
+    /// above Tab", and it is what GNOME uses for its own bindings on that key
+    /// (`switch-group` ships as `<Super>Above_Tab`).
+    ///
+    /// This is the layout-independence §3 asks for, done the way the desktop
+    /// itself does it: `<Control>grave` only matches where the key above Tab
+    /// actually emits the grave keysym, so on a French AZERTY or German QWERTZ
+    /// layout the default shortcut would move to a different physical key or
+    /// stop existing. `Above_Tab` is resolved by position, so it does not.
+    ///
+    /// Deliberately **not** used for XFCE or the portal: `Above_Tab` is not a
+    /// real X keysym, and `gtk_accelerator_parse` — which xfsettingsd uses —
+    /// does not understand it.
+    pub fn to_mutter(&self) -> String {
+        if self.key != "grave" {
+            return self.to_gsettings();
+        }
+        let mut out = String::new();
+        if self.mods.ctrl {
+            out.push_str("<Control>");
+        }
+        if self.mods.alt {
+            out.push_str("<Alt>");
+        }
+        if self.mods.shift {
+            out.push_str("<Shift>");
+        }
+        if self.mods.superkey {
+            out.push_str("<Super>");
+        }
+        out.push_str("Above_Tab");
+        out
+    }
+
     /// The KDE / Qt spelling, which wants the printable character where there
     /// is one: `Ctrl+``.
     pub fn to_kde(&self) -> String {
@@ -483,6 +520,9 @@ mod tests {
 
         assert_eq!(accel.to_config(), "Ctrl+grave");
         assert_eq!(accel.to_gsettings(), "<Control>grave");
+        // GNOME and Cinnamon get the position-based form, so the default
+        // lands on the key above Tab on every layout (§3).
+        assert_eq!(accel.to_mutter(), "<Control>Above_Tab");
         assert_eq!(accel.to_kde(), "Ctrl+`");
         assert_eq!(accel.to_portal(), "CTRL+grave");
         assert_eq!(accel.to_display(), "Ctrl + ` (backtick)");
@@ -507,6 +547,34 @@ mod tests {
             assert_eq!(accel.key, "grave", "{spelling:?}");
             assert!(accel.mods.ctrl, "{spelling:?}");
         }
+    }
+
+    #[test]
+    fn only_the_grave_key_is_translated_to_above_tab() {
+        // Above_Tab is mutter's name for one specific physical key; applying
+        // it to anything else would silently rebind the user's choice.
+        let v = Accelerator::parse("Super+V").unwrap();
+        assert_eq!(v.to_mutter(), v.to_gsettings());
+        assert_eq!(v.to_mutter(), "<Super>v");
+
+        let f5 = Accelerator::parse("Ctrl+F5").unwrap();
+        assert_eq!(f5.to_mutter(), "<Control>F5");
+
+        // ...and the modifiers still come through on the translated one.
+        let shifted = Accelerator::parse("Ctrl+Shift+grave").unwrap();
+        assert_eq!(shifted.to_mutter(), "<Control><Shift>Above_Tab");
+    }
+
+    #[test]
+    fn above_tab_is_never_emitted_for_dialects_that_cannot_parse_it() {
+        // xfsettingsd uses gtk_accelerator_parse and KDE uses Qt; neither
+        // knows Above_Tab, so they must keep the real keysym name.
+        let accel = Accelerator::parse("Ctrl+grave").unwrap();
+        assert_eq!(accel.to_gsettings(), "<Control>grave");
+        assert_eq!(accel.to_kde(), "Ctrl+`");
+        assert_eq!(accel.to_portal(), "CTRL+grave");
+        assert!(!accel.to_gsettings().contains("Above_Tab"));
+        assert!(!accel.to_portal().contains("Above_Tab"));
     }
 
     #[test]
