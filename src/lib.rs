@@ -22,12 +22,18 @@
 //! below [`storage`] performs any I/O outside the data directory.
 
 pub mod clipboard;
+pub mod cli;
 pub mod config;
+pub mod daemon;
+pub mod install;
+pub mod ipc;
 pub mod logging;
 pub mod model;
+pub mod notify;
 pub mod paths;
 pub mod platform;
 pub mod privacy;
 pub mod search;
+pub mod shortcuts;
 pub mod storage;
 pub mod ui;

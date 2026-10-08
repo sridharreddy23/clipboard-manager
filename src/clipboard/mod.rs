@@ -452,6 +452,17 @@ impl Monitor {
         self.ctx.suppress(content_hash);
     }
 
+    /// A detached handle for suppressing, usable without borrowing the monitor.
+    ///
+    /// The UI needs to suppress a hash from inside a widget callback, where
+    /// holding a reference to the `Monitor` would tangle the ownership graph —
+    /// the daemon owns both, and the popup would have to borrow back up through
+    /// it. The returned closure holds only the shared context.
+    pub fn suppressor(&self) -> impl Fn(&str) + Clone + 'static {
+        let ctx = Arc::clone(&self.ctx);
+        move |content_hash: &str| ctx.suppress(content_hash)
+    }
+
     /// Ask the monitor to stop.
     ///
     /// Sets the stop flag, closes the event channel and interrupts the

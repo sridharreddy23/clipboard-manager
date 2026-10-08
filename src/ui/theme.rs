@@ -158,6 +158,13 @@ fn from_portal() -> Option<Resolved> {
 fn unwrap_variants(mut value: glib::Variant) -> glib::Variant {
     // Bounded rather than `while`: a malformed reply must not spin.
     for _ in 0..4 {
+        // The type must be checked *before* unwrapping. `get::<Variant>()` on
+        // a non-variant does not return `None`, it trips a GLib assertion and
+        // logs `g_variant_get_variant: assertion failed` to the journal on
+        // every call — which is exactly what it did before this check existed.
+        if value.type_() != glib::VariantTy::VARIANT {
+            break;
+        }
         match value.get::<glib::Variant>() {
             Some(inner) => value = inner,
             None => break,
@@ -205,6 +212,23 @@ mod tests {
         assert!(STYLE.len() > 500, "stylesheet looks empty");
         assert!(STYLE.contains(".cm-light"), "no light rules");
         assert!(STYLE.contains(".cm-dark"), "no dark rules");
+    }
+
+    #[test]
+    fn unwrapping_a_plain_value_leaves_it_alone_without_a_glib_assertion() {
+        // Regression: the first version called `get::<Variant>()` unguarded,
+        // which logged a GLib CRITICAL on every popup open.
+        let plain = 1u32.to_variant();
+        assert_eq!(unwrap_variants(plain.clone()), plain);
+        assert_eq!(unwrap_variants(plain).get::<u32>(), Some(1));
+    }
+
+    #[test]
+    fn nested_variants_are_peeled_to_the_value_inside() {
+        // What the settings portal actually returns for `Read`.
+        let inner = 1u32.to_variant();
+        let wrapped = inner.to_variant().to_variant();
+        assert_eq!(unwrap_variants(wrapped).get::<u32>(), Some(1));
     }
 
     #[test]

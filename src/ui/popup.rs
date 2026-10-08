@@ -68,7 +68,6 @@ pub struct Deps {
     pub caveat: Option<String>,
     pub session: String,
     pub backend: String,
-    pub on_open_settings: Rc<dyn Fn()>,
 }
 
 pub struct Popup {
@@ -89,6 +88,13 @@ pub struct Popup {
     /// Set while `refresh` is rebuilding, so the row-selection signal it
     /// triggers does not fire an activation.
     rebuilding: Cell<bool>,
+    /// Opens the settings window.
+    ///
+    /// Settable after construction because the popup and the settings window
+    /// are both owned by [`crate::daemon::Core`], and the popup has to exist
+    /// first so the shortcut has something to toggle. A no-op default rather
+    /// than an `Option` so the button is never wired to nothing.
+    on_open_settings: RefCell<Rc<dyn Fn()>>,
 }
 
 impl Popup {
@@ -197,6 +203,9 @@ impl Popup {
             shown: RefCell::new(Vec::new()),
             thumbs: RefCell::new(HashMap::new()),
             rebuilding: Cell::new(false),
+            on_open_settings: RefCell::new(Rc::new(|| {
+                tracing::warn!("the settings button was pressed before it was wired up");
+            })),
         });
 
         popup.insert_caveat_banner();
@@ -256,7 +265,8 @@ impl Popup {
                 // Hide first: the settings window is a normal window, and
                 // leaving an always-on-top panel over it looks broken.
                 this.hide();
-                (this.deps.on_open_settings)();
+                let open = Rc::clone(&this.on_open_settings.borrow());
+                open();
             });
         }
 
@@ -822,6 +832,21 @@ impl Popup {
 
     pub fn window(&self) -> &gtk::Window {
         &self.window
+    }
+
+    /// Wire up the settings button. Called once by the daemon after it has
+    /// built both windows.
+    pub fn set_on_open_settings(&self, open: Rc<dyn Fn()>) {
+        *self.on_open_settings.borrow_mut() = open;
+    }
+
+    /// Run the "Clear all" flow, including its confirmation.
+    ///
+    /// Public so the tray's "Clear History…" item goes through exactly the same
+    /// confirmation as the panel's own button, rather than a second copy of the
+    /// wording that could drift.
+    pub fn request_clear_all(self: &Rc<Self>) {
+        self.clear_all();
     }
 
     /// Show the About dialog with the live session and backend (§37).

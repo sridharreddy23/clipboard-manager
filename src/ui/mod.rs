@@ -23,3 +23,4 @@ pub mod row;
 pub mod selection;
 pub mod settings_window;
 pub mod theme;
+pub mod tray;
