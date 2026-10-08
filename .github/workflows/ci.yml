@@ -132,24 +132,14 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-      # Clippy and rustfmt are advisory for now, and that is a deliberate,
-      # temporary state rather than an oversight.
-      #
-      # Neither tool is installed on the machine this project was written on
-      # (`cargo clippy` and `cargo fmt` both report "no such command"), so
-      # their output has never been seen. Asserting them as gates would mean
-      # claiming a check that was never run, and would turn the first CI run
-      # red on style rather than on anything that matters.
-      #
-      # Once someone has run `cargo clippy --fix` and `cargo fmt` over the tree
-      # one time, delete the two `continue-on-error` lines below. They should
-      # be gates; they just cannot honestly be gates yet.
+      # Real gates. They were advisory until CI run 37757490905 confirmed both
+      # pass clean on all seven targets -- neither tool is installed on the
+      # machine this was written on, so until then gating on them would have
+      # meant asserting a check nobody had seen the output of.
       - name: Clippy
-        continue-on-error: true
         run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Formatting
-        continue-on-error: true
         run: cargo fmt --all --check
 
       # The live-session tests are #[ignore]d because they take over the real
