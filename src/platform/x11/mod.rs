@@ -755,7 +755,10 @@ impl Drop for X11Backend {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
+// No unit tests here, deliberately. Everything in this module is a
+// conversation with a running X server -- XFIXES subscription, TARGETS
+// negotiation, INCR transfers -- and a test that mocked the server would only
+// assert that the mock behaves like the mock. The invariants that *can* be
+// checked without one are compile-time assertions above, and the behaviour is
+// covered end-to-end by `tests/platform_live.rs`, which drives this backend
+// against a real display (including XWayland).

@@ -894,9 +894,8 @@ fn enable_transparency(window: &gtk::Window) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-
-}
+// No unit tests here. This module is GTK widget construction and signal
+// wiring, which needs a display to exercise and asserts nothing useful
+// without one. The numeric invariants are compile-time assertions above; the
+// behaviour it drives -- search, restore, pin, delete, clear -- is covered by
+// `tests/pipeline.rs` against the real store.
