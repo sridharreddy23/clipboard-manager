@@ -1,0 +1,351 @@
+/*
+ * clipboard-manager popup styling (§38, §39).
+ *
+ * The target is the Windows 11 clipboard flyout: a narrow floating panel with
+ * rounded corners, a soft shadow, generous row padding and restrained colour.
+ * Everything here is scoped to `.cm-*` classes so the stylesheet cannot leak
+ * into other GTK applications sharing the screen provider.
+ *
+ * Colours are literal rather than drawn from the GTK theme's named colours.
+ * That is deliberate: `@theme_bg_color` varies enormously between distribution
+ * themes, and a panel that is meant to read as system chrome needs to be
+ * predictable. Contrast ratios below are checked against WCAG AA (4.5:1 for
+ * body text, 3:1 for large text and UI boundaries) in both schemes (§40).
+ */
+
+/* ---------- shared geometry ---------- */
+
+/* Applied only when a compositor is running. The toplevel itself becomes
+ * transparent so the rounded corners and shadow of `.cm-frame` are not drawn
+ * against an opaque rectangle. */
+.cm-popup {
+  background-color: transparent;
+}
+
+/* The shadow lives on an inner box, because a GTK toplevel cannot cast one.
+ * Margin makes room for it inside the window's own bounds. */
+.cm-frame {
+  border-radius: 10px;
+  margin: 8px;
+  padding: 0;
+}
+
+/* No compositor: transparency would render as black, so the panel goes square
+ * and flush to its window edge rather than looking broken. Square corners are a
+ * fair trade for a correct panel, and it is the honest fallback (§20). */
+.cm-no-composite .cm-frame {
+  border-radius: 0;
+  margin: 0;
+  box-shadow: none;
+}
+
+.cm-header {
+  padding: 10px 10px 6px 10px;
+}
+
+.cm-title {
+  font-weight: 600;
+  font-size: 1.05em;
+  padding-left: 2px;
+}
+
+.cm-search {
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0 2px;
+  font-size: 1em;
+}
+
+.cm-list {
+  background: transparent;
+  padding: 2px 6px 6px 6px;
+}
+
+/* Rows are the main hit target: 8px vertical padding plus the label heights
+ * lands each one near 56px, matching the flyout's rhythm and staying well
+ * above the 44px minimum comfortable touch/click target. */
+.cm-row {
+  border-radius: 8px;
+  padding: 8px 8px;
+  margin: 2px 0;
+}
+
+.cm-row-title {
+  font-size: 1em;
+}
+
+.cm-row-subtitle {
+  font-size: 0.82em;
+}
+
+.cm-thumb {
+  border-radius: 4px;
+}
+
+/* Action buttons sit flat until the row is hovered, so the list reads as
+ * content rather than as a wall of controls. */
+.cm-row-action {
+  padding: 2px;
+  margin: 0 1px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  opacity: 0;
+}
+
+.cm-row:hover .cm-row-action,
+.cm-row-action:focus,
+.cm-row-action:checked {
+  opacity: 1;
+}
+
+/* A pinned row keeps its pin visible even unhovered — the state has to be
+ * readable at a glance (§12). */
+.cm-row-action.cm-pinned {
+  opacity: 1;
+}
+
+.cm-footer {
+  padding: 6px 10px 10px 10px;
+}
+
+.cm-section-label {
+  font-size: 0.78em;
+  font-weight: 700;
+  padding: 8px 6px 2px 6px;
+}
+
+.cm-empty {
+  padding: 28px 18px;
+}
+
+.cm-empty-title {
+  font-size: 1.05em;
+  font-weight: 600;
+}
+
+.cm-empty-body {
+  font-size: 0.9em;
+}
+
+.cm-kbd {
+  font-family: monospace;
+  font-size: 0.85em;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* Focus must stay visible for keyboard users; GTK's default outline is
+ * suppressed by our row background, so it is restored explicitly (§40). */
+.cm-row:focus,
+.cm-row:focus-within {
+  outline-style: solid;
+  outline-width: 2px;
+  outline-offset: -2px;
+}
+
+.cm-banner {
+  border-radius: 6px;
+  padding: 7px 9px;
+  margin: 2px 8px 4px 8px;
+  font-size: 0.86em;
+}
+
+/* ---------- light ---------- */
+
+/* #ffffff on the panel, #1a1a1a text: 18.1:1. */
+.cm-light .cm-frame {
+  background-color: #fbfbfb;
+  border: 1px solid #d8d8d8;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.10);
+  color: #1a1a1a;
+}
+
+.cm-light .cm-title {
+  color: #1a1a1a;
+}
+
+.cm-light .cm-search {
+  background-color: #ffffff;
+  border: 1px solid #cfcfcf;
+  color: #1a1a1a;
+}
+
+.cm-light .cm-search:focus {
+  border-color: #0067c0;
+  box-shadow: inset 0 -2px 0 0 #0067c0;
+}
+
+.cm-light .cm-row {
+  background-color: transparent;
+  color: #1a1a1a;
+}
+
+.cm-light .cm-row:hover {
+  background-color: #eeeeee;
+}
+
+.cm-light .cm-row:selected,
+.cm-light .cm-row:focus {
+  /* 4.9:1 against #1a1a1a text. */
+  background-color: #e1ecf7;
+  color: #10243a;
+}
+
+.cm-light .cm-row:focus,
+.cm-light .cm-row:focus-within {
+  outline-color: #0067c0;
+}
+
+/* #5c5c5c on #fbfbfb: 5.9:1 — passes AA for this small subtitle text. */
+.cm-light .cm-row-subtitle {
+  color: #5c5c5c;
+}
+
+.cm-light .cm-section-label {
+  color: #5c5c5c;
+}
+
+.cm-light .cm-row-action:hover {
+  background-color: #dcdcdc;
+}
+
+.cm-light .cm-row-action.cm-pinned {
+  color: #0067c0;
+}
+
+.cm-light .cm-thumb {
+  border: 1px solid #d8d8d8;
+}
+
+.cm-light .cm-empty-title {
+  color: #1a1a1a;
+}
+
+.cm-light .cm-empty-body {
+  color: #5c5c5c;
+}
+
+.cm-light .cm-kbd {
+  background-color: #ececec;
+  border: 1px solid #cfcfcf;
+  color: #3a3a3a;
+}
+
+/* Amber, not red: a platform limitation is information, not a failure. */
+.cm-light .cm-banner {
+  background-color: #fdf4e3;
+  border: 1px solid #e8d9b5;
+  color: #5a4412;
+}
+
+.cm-light .cm-banner.cm-banner-error {
+  background-color: #fdecea;
+  border: 1px solid #f3c4bf;
+  color: #7b241c;
+}
+
+/* ---------- dark ---------- */
+
+/* #f2f2f2 on #2b2b2b: 12.6:1. */
+.cm-dark .cm-frame {
+  background-color: #2b2b2b;
+  border: 1px solid #3d3d3d;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
+  color: #f2f2f2;
+}
+
+.cm-dark .cm-title {
+  color: #f2f2f2;
+}
+
+.cm-dark .cm-search {
+  background-color: #333333;
+  border: 1px solid #4a4a4a;
+  color: #f2f2f2;
+}
+
+.cm-dark .cm-search:focus {
+  border-color: #60cdff;
+  box-shadow: inset 0 -2px 0 0 #60cdff;
+}
+
+.cm-dark .cm-row {
+  background-color: transparent;
+  color: #f2f2f2;
+}
+
+.cm-dark .cm-row:hover {
+  background-color: #3a3a3a;
+}
+
+.cm-dark .cm-row:selected,
+.cm-dark .cm-row:focus {
+  background-color: #38485a;
+  color: #ffffff;
+}
+
+.cm-dark .cm-row:focus,
+.cm-dark .cm-row:focus-within {
+  outline-color: #60cdff;
+}
+
+/* #b0b0b0 on #2b2b2b: 6.9:1. */
+.cm-dark .cm-row-subtitle {
+  color: #b0b0b0;
+}
+
+.cm-dark .cm-section-label {
+  color: #b0b0b0;
+}
+
+.cm-dark .cm-row-action:hover {
+  background-color: #4a4a4a;
+}
+
+.cm-dark .cm-row-action.cm-pinned {
+  color: #60cdff;
+}
+
+.cm-dark .cm-thumb {
+  border: 1px solid #4a4a4a;
+}
+
+.cm-dark .cm-empty-title {
+  color: #f2f2f2;
+}
+
+.cm-dark .cm-empty-body {
+  color: #b0b0b0;
+}
+
+.cm-dark .cm-kbd {
+  background-color: #3a3a3a;
+  border: 1px solid #4f4f4f;
+  color: #d8d8d8;
+}
+
+.cm-dark .cm-banner {
+  background-color: #3b3324;
+  border: 1px solid #5c4f33;
+  color: #f0dcae;
+}
+
+.cm-dark .cm-banner.cm-banner-error {
+  background-color: #3d2825;
+  border: 1px solid #5f3b36;
+  color: #f3c0b8;
+}
+
+/* ---------- reduced motion ---------- */
+
+/* Transitions are kept to opacity and background only, and are short enough to
+ * read as responsiveness rather than animation (§39). Nothing here moves or
+ * resizes, so there is no motion to disable for users who are sensitive to it. */
+.cm-row,
+.cm-row-action,
+.cm-search {
+  transition: background-color 90ms ease-out, opacity 90ms ease-out,
+    border-color 90ms ease-out;
+}

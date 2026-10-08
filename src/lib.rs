@@ -30,3 +30,4 @@ pub mod platform;
 pub mod privacy;
 pub mod search;
 pub mod storage;
+pub mod ui;

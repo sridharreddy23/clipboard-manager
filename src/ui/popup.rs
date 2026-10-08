@@ -1,0 +1,880 @@
+//! The clipboard history panel (§5, §6, §7, §32, §40).
+//!
+//! A compact floating panel that appears near the pointer, stays above other
+//! windows, and closes when it loses focus, when Escape is pressed, or when an
+//! entry is chosen. Layout, top to bottom: title, optional platform-limitation
+//! banner, search field, scrolling list, and "Clear all".
+//!
+//! # Re-entrancy
+//!
+//! The [`Store`] lives behind a `RefCell` and the whole UI is single-threaded,
+//! so there is no lock — but GTK's modal dialogs run a *nested* main loop, and
+//! anything on the stack when one opens is still on the stack when a signal
+//! fires inside it. Holding a `RefCell` borrow across `dialog.run()` would
+//! therefore panic the moment the user clicked a row behind the dialog.
+//!
+//! Every handler here follows the same shape, and it is load-bearing rather
+//! than stylistic:
+//!
+//! 1. borrow the store, copy out what is needed, **drop the borrow**;
+//! 2. run the dialog;
+//! 3. borrow again to write.
+//!
+//! # Paste behaviour
+//!
+//! Activating an entry restores it to the clipboard and closes the panel. It
+//! does not synthesise a keystroke into the previously focused application —
+//! §51 forbids that, and [`crate::ui::selection`] explains why. The user then
+//! presses their own paste key, exactly as with the Windows flyout.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use gtk::prelude::*;
+
+use crate::clipboard::SharedSettings;
+use crate::config::ActivateAction;
+use crate::model::{self, ClipItem, ClipKind};
+use crate::storage::Store;
+use crate::ui::row::{self, RowAction};
+use crate::ui::{dialogs, selection, theme};
+
+/// How many entries the list renders at once.
+///
+/// The store can hold a hundred thousand; building a hundred thousand GTK
+/// widgets would take seconds and megabytes. Search is how you reach the rest,
+/// which is the same bargain the Windows flyout makes (§46).
+const PAGE: usize = 200;
+
+/// Thumbnails cached in memory, keyed by blob hash.
+///
+/// Bounded because the cache lives as long as the daemon: an unbounded one
+/// would be a slow leak for a user who copies a lot of screenshots.
+const THUMB_CACHE_LIMIT: usize = 96;
+
+/// Gap between the pointer and the panel's edge.
+const CURSOR_MARGIN: i32 = 12;
+
+/// Things the popup needs from the daemon, passed in rather than reached for so
+/// this type has no global state and can be constructed in a test.
+pub struct Deps {
+    pub store: Rc<RefCell<Store>>,
+    pub settings: SharedSettings,
+    /// Tells the monitor to ignore the next clipping with this hash, so
+    /// restoring an entry does not come straight back as a new one.
+    pub suppress: Rc<dyn Fn(&str)>,
+    /// Platform limitation to show once, if the chosen backend has one.
+    pub caveat: Option<String>,
+    pub session: String,
+    pub backend: String,
+    pub on_open_settings: Rc<dyn Fn()>,
+}
+
+pub struct Popup {
+    window: gtk::Window,
+    frame: gtk::Box,
+    search: gtk::SearchEntry,
+    list: gtk::ListBox,
+    scroller: gtk::ScrolledWindow,
+    empty: gtk::Box,
+    empty_title: gtk::Label,
+    empty_body: gtk::Label,
+    clear_button: gtk::Button,
+    deps: Deps,
+    /// Row ids in display order, so keyboard navigation and the id of a
+    /// selected row can be resolved without walking widgets.
+    shown: RefCell<Vec<i64>>,
+    thumbs: RefCell<HashMap<String, gdk_pixbuf::Pixbuf>>,
+    /// Set while `refresh` is rebuilding, so the row-selection signal it
+    /// triggers does not fire an activation.
+    rebuilding: Cell<bool>,
+}
+
+impl Popup {
+    pub fn new(deps: Deps) -> Rc<Self> {
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        window.set_title("Clipboard history");
+        window.set_decorated(false);
+        window.set_resizable(false);
+        // Not a normal window: no taskbar button, no pager entry, above the
+        // windows it floats over.
+        window.set_skip_taskbar_hint(true);
+        window.set_skip_pager_hint(true);
+        window.set_keep_above(true);
+        window.set_type_hint(gdk::WindowTypeHint::Dialog);
+        window.set_icon_name(Some("edit-paste"));
+
+        enable_transparency(&window);
+
+        // The shadow and rounded corners live on this inner box, because a GTK
+        // toplevel cannot cast a shadow itself.
+        let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        frame.style_context().add_class("cm-frame");
+
+        // ---- header ----
+        let header = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        header.style_context().add_class("cm-header");
+
+        let title = gtk::Label::new(Some("Clipboard history"));
+        title.style_context().add_class("cm-title");
+        title.set_xalign(0.0);
+        header.add(&title);
+
+        let search = gtk::SearchEntry::new();
+        search.style_context().add_class("cm-search");
+        search.set_placeholder_text(Some("Search clipboard history"));
+        // Screen readers announce this; the placeholder alone is not a label.
+        search.set_tooltip_text(Some("Search clipboard history (Ctrl+F)"));
+        header.add(&search);
+
+        frame.add(&header);
+
+        // ---- list ----
+        let list = gtk::ListBox::new();
+        list.style_context().add_class("cm-list");
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        list.set_activate_on_single_click(true);
+
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&list)
+            .build();
+        frame.add(&scroller);
+
+        // ---- empty state ----
+        let empty = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        empty.style_context().add_class("cm-empty");
+        empty.set_valign(gtk::Align::Center);
+        let empty_title = gtk::Label::new(None);
+        empty_title.style_context().add_class("cm-empty-title");
+        let empty_body = gtk::Label::new(None);
+        empty_body.style_context().add_class("cm-empty-body");
+        empty_body.set_line_wrap(true);
+        empty_body.set_justify(gtk::Justification::Center);
+        empty_body.set_max_width_chars(36);
+        empty.add(&empty_title);
+        empty.add(&empty_body);
+        frame.add(&empty);
+
+        // ---- footer ----
+        let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        footer.style_context().add_class("cm-footer");
+
+        let settings_button = gtk::Button::from_icon_name(
+            Some("preferences-system-symbolic"),
+            gtk::IconSize::Button,
+        );
+        settings_button.set_relief(gtk::ReliefStyle::None);
+        settings_button.set_tooltip_text(Some("Settings"));
+        footer.add(&settings_button);
+
+        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        footer.add(&spacer);
+
+        let clear_button = gtk::Button::with_label("Clear all");
+        clear_button.set_relief(gtk::ReliefStyle::None);
+        clear_button.set_tooltip_text(Some("Delete every unpinned entry"));
+        footer.add(&clear_button);
+
+        frame.add(&footer);
+        window.add(&frame);
+
+        let popup = Rc::new(Self {
+            window,
+            frame,
+            search,
+            list,
+            scroller,
+            empty,
+            empty_title,
+            empty_body,
+            clear_button,
+            deps,
+            shown: RefCell::new(Vec::new()),
+            thumbs: RefCell::new(HashMap::new()),
+            rebuilding: Cell::new(false),
+        });
+
+        popup.insert_caveat_banner();
+        popup.wire(&settings_button);
+        popup
+    }
+
+    /// Show the banner for a platform limitation, if the backend reported one.
+    ///
+    /// §20 and §56: a limitation is stated plainly in the UI rather than left
+    /// for the user to discover when the exclusion list quietly does nothing.
+    fn insert_caveat_banner(&self) {
+        let Some(caveat) = &self.deps.caveat else {
+            return;
+        };
+        let banner = gtk::Label::new(Some(caveat));
+        banner.style_context().add_class("cm-banner");
+        banner.set_line_wrap(true);
+        banner.set_xalign(0.0);
+        banner.set_max_width_chars(44);
+        self.frame.add(&banner);
+        // Position 1: directly under the header, above the list.
+        self.frame.reorder_child(&banner, 1);
+    }
+
+    fn wire(self: &Rc<Self>, settings_button: &gtk::Button) {
+        // -- search --
+        {
+            let this = Rc::clone(self);
+            self.search.connect_search_changed(move |_| this.refresh());
+        }
+
+        // -- activation --
+        {
+            let this = Rc::clone(self);
+            self.list.connect_row_activated(move |_, row| {
+                if this.rebuilding.get() {
+                    return;
+                }
+                let index = row.index();
+                if let Some(id) = this.shown.borrow().get(index as usize).copied() {
+                    this.handle(RowAction::Activate(id));
+                }
+            });
+        }
+
+        // -- clear all --
+        {
+            let this = Rc::clone(self);
+            self.clear_button.connect_clicked(move |_| this.clear_all());
+        }
+
+        // -- settings --
+        {
+            let this = Rc::clone(self);
+            settings_button.connect_clicked(move |_| {
+                // Hide first: the settings window is a normal window, and
+                // leaving an always-on-top panel over it looks broken.
+                this.hide();
+                (this.deps.on_open_settings)();
+            });
+        }
+
+        // -- keyboard --
+        {
+            let this = Rc::clone(self);
+            self.window.connect_key_press_event(move |_, event| this.on_key(event));
+        }
+
+        // -- close on focus loss --
+        //
+        // This is how "click outside to dismiss" is implemented. A pointer grab
+        // would be the other option, but grabs misbehave across compositors and
+        // can leave the desktop unclickable if we crash while holding one;
+        // losing focus is both safer and what the user already expects.
+        {
+            let this = Rc::clone(self);
+            self.window.connect_focus_out_event(move |_, _| {
+                this.hide();
+                glib::Propagation::Proceed
+            });
+        }
+
+        // Closing the panel must never close the application: the daemon keeps
+        // monitoring, and the panel is reopened by the shortcut.
+        self.window.connect_delete_event(|window, _| {
+            window.hide();
+            glib::Propagation::Stop
+        });
+    }
+
+    // ---- visibility ----------------------------------------------------------
+
+    pub fn is_visible(&self) -> bool {
+        self.window.is_visible()
+    }
+
+    pub fn toggle(self: &Rc<Self>) {
+        if self.is_visible() {
+            self.hide();
+        } else {
+            self.show();
+        }
+    }
+
+    pub fn hide(&self) {
+        self.window.hide();
+    }
+
+    /// Open the panel near the pointer and focus the search field.
+    pub fn show(self: &Rc<Self>) {
+        let settings = self.settings();
+        let resolved = theme::resolve(settings.appearance.theme);
+        theme::apply(&self.window, resolved);
+
+        self.window
+            .set_size_request(settings.appearance.popup_width, settings.appearance.popup_height);
+        self.window.resize(settings.appearance.popup_width, settings.appearance.popup_height);
+
+        // Clear the previous query so the panel always opens on the full list.
+        // Keeping the last search would be a small convenience and a large
+        // surprise.
+        self.search.set_text("");
+        self.refresh();
+
+        self.window.show_all();
+        self.sync_empty_state();
+        self.position_near_pointer();
+
+        self.window.present();
+        self.search.grab_focus();
+    }
+
+    /// Place the panel beside the pointer, kept inside the monitor's work area.
+    fn position_near_pointer(&self) {
+        let Some(display) = gdk::Display::default() else {
+            return;
+        };
+        let Some(seat) = display.default_seat() else {
+            return;
+        };
+        let Some(pointer) = seat.pointer() else {
+            return;
+        };
+
+        let (screen, x, y) = pointer.position();
+        let monitor = display
+            .monitor_at_point(x, y)
+            .or_else(|| display.primary_monitor())
+            .or_else(|| display.monitor(0));
+        let Some(monitor) = monitor else {
+            return;
+        };
+
+        // Work area excludes panels and docks, so the popup never lands under
+        // the GNOME top bar or a Plasma taskbar.
+        let area = monitor.workarea();
+        let (width, height) = self.window.size();
+
+        // Prefer below-right of the pointer, flipping when that would overflow —
+        // the same rule a context menu follows.
+        let mut px = x + CURSOR_MARGIN;
+        let mut py = y + CURSOR_MARGIN;
+        if px + width > area.x() + area.width() {
+            px = x - width - CURSOR_MARGIN;
+        }
+        if py + height > area.y() + area.height() {
+            py = y - height - CURSOR_MARGIN;
+        }
+
+        // Clamp as a backstop, for a pointer in a corner or a panel larger than
+        // the work area.
+        let px = px.clamp(area.x(), (area.x() + area.width() - width).max(area.x()));
+        let py = py.clamp(area.y(), (area.y() + area.height() - height).max(area.y()));
+
+        self.window.set_screen(&screen);
+        self.window.move_(px, py);
+    }
+
+    // ---- list ----------------------------------------------------------------
+
+    fn settings(&self) -> crate::config::Settings {
+        match self.deps.settings.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Rebuild the list from the store, honouring the current search text.
+    pub fn refresh(self: &Rc<Self>) {
+        let query = self.search.text().to_string();
+        let settings = self.settings();
+
+        // Borrow, query, drop. The borrow must not survive into row building,
+        // which runs callbacks that may want the store again.
+        let items: Vec<ClipItem> = {
+            let store = self.deps.store.borrow();
+            let result = if query.trim().is_empty() {
+                store.recent(PAGE)
+            } else {
+                store.search(&query, PAGE)
+            };
+            match result {
+                Ok(items) => items,
+                Err(err) => {
+                    // A failed query must not blank the UI silently.
+                    tracing::error!(error = %err, "could not read the history");
+                    Vec::new()
+                }
+            }
+        };
+
+        self.rebuilding.set(true);
+        for child in self.list.children() {
+            self.list.remove(&child);
+        }
+
+        let now = model::now_ms();
+        let mut shown = Vec::with_capacity(items.len());
+        let mut pinned_header_done = false;
+        let mut unpinned_header_done = false;
+        let any_pinned = items.iter().any(|i| i.is_pinned);
+
+        for item in &items {
+            // Section labels, but only when there is a pinned group to separate
+            // — a header over a single ungrouped list is just noise (§11).
+            if any_pinned {
+                if item.is_pinned && !pinned_header_done {
+                    self.add_section_label("Pinned");
+                    shown.push(i64::MIN);
+                    pinned_header_done = true;
+                } else if !item.is_pinned && !unpinned_header_done {
+                    self.add_section_label("Recent");
+                    shown.push(i64::MIN);
+                    unpinned_header_done = true;
+                }
+            }
+
+            let thumb = self.thumbnail_for(item, settings.appearance.thumbnail_size);
+            let this = Rc::clone(self);
+            let built = row::build(
+                item,
+                now,
+                settings.appearance.show_timestamps,
+                thumb.as_ref(),
+                settings.appearance.thumbnail_size,
+                move |action| this.handle(action),
+            );
+            self.list.add(&built.widget);
+            shown.push(built.id);
+        }
+
+        *self.shown.borrow_mut() = shown;
+        self.list.show_all();
+        self.rebuilding.set(false);
+
+        self.sync_empty_state_for(items.len(), &query);
+        self.select_first_row();
+    }
+
+    /// A non-selectable heading inside the list.
+    fn add_section_label(&self, text: &str) {
+        let label = gtk::Label::new(Some(text));
+        label.style_context().add_class("cm-section-label");
+        label.set_xalign(0.0);
+        let row = gtk::ListBoxRow::new();
+        row.add(&label);
+        row.set_selectable(false);
+        row.set_activatable(false);
+        self.list.add(&row);
+    }
+
+    fn select_first_row(&self) {
+        // Skip the section headings, which are not selectable.
+        let shown = self.shown.borrow();
+        if let Some(index) = shown.iter().position(|id| *id != i64::MIN) {
+            if let Some(row) = self.list.row_at_index(index as i32) {
+                self.list.select_row(Some(&row));
+            }
+        }
+    }
+
+    fn sync_empty_state(&self) {
+        let count = self.shown.borrow().iter().filter(|id| **id != i64::MIN).count();
+        let query = self.search.text().to_string();
+        self.sync_empty_state_for(count, &query);
+    }
+
+    fn sync_empty_state_for(&self, count: usize, query: &str) {
+        if count > 0 {
+            self.empty.hide();
+            self.scroller.show();
+            return;
+        }
+
+        self.scroller.hide();
+        if query.trim().is_empty() {
+            self.empty_title.set_text("Nothing copied yet");
+            self.empty_body.set_text(
+                "Copy something and it will appear here. \
+                 Pinned entries are kept until you unpin them.",
+            );
+        } else {
+            self.empty_title.set_text("No matches");
+            self.empty_body
+                .set_text(&format!("Nothing in the history matches “{query}”."));
+        }
+        self.empty.show_all();
+    }
+
+    /// A cached, pre-scaled thumbnail for an image row.
+    fn thumbnail_for(&self, item: &ClipItem, size: i32) -> Option<gdk_pixbuf::Pixbuf> {
+        if item.kind != ClipKind::Image {
+            return None;
+        }
+        let hash = item.blob_hash.as_ref()?;
+
+        if let Some(cached) = self.thumbs.borrow().get(hash) {
+            return Some(cached.clone());
+        }
+
+        let bytes = {
+            let store = self.deps.store.borrow();
+            // A missing blob is not an error worth a dialog: the row falls back
+            // to the type icon and stays usable (§35).
+            store.blobs().get(hash).ok()?
+        };
+        let thumb = dialogs::thumbnail_from_bytes(&bytes, size)?;
+
+        let mut cache = self.thumbs.borrow_mut();
+        if cache.len() >= THUMB_CACHE_LIMIT {
+            // Plain eviction rather than LRU: the list is rebuilt from the top
+            // on every refresh, so the entries that matter are re-inserted
+            // immediately and tracking recency would buy nothing.
+            cache.clear();
+        }
+        cache.insert(hash.clone(), thumb.clone());
+        Some(thumb)
+    }
+
+    /// Forget cached thumbnails, after a delete or a settings change.
+    pub fn invalidate_thumbnails(&self) {
+        self.thumbs.borrow_mut().clear();
+    }
+
+    // ---- actions -------------------------------------------------------------
+
+    fn handle(self: &Rc<Self>, action: RowAction) {
+        match action {
+            RowAction::Activate(id) => self.restore(id, true),
+            RowAction::Copy(id) => self.restore(id, false),
+            RowAction::TogglePin(id) => self.toggle_pin(id),
+            RowAction::Edit(id) => self.edit(id),
+            RowAction::View(id) => self.view(id),
+            RowAction::Delete(id) => self.delete(id),
+        }
+    }
+
+    /// Put an entry back on the clipboard (§51, §52).
+    fn restore(self: &Rc<Self>, id: i64, close: bool) {
+        let loaded = {
+            let store = self.deps.store.borrow();
+            store.payload_of(id)
+        };
+
+        let (item, payload) = match loaded {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::error!(id, error = %err, "could not load the entry to restore");
+                dialogs::error(
+                    Some(&self.window),
+                    "That entry could not be read",
+                    "Its stored data is missing or unreadable. The entry has been left in \
+                     place; deleting and re-copying is the simplest fix.",
+                );
+                return;
+            }
+        };
+
+        // Register the hash *before* taking the selection, or the monitor will
+        // see our own write as a new clipping and bounce the entry to the top.
+        (self.deps.suppress)(&item.content_hash);
+
+        if let Err(err) = selection::restore(&item, payload) {
+            tracing::error!(id, error = %err, "could not take the clipboard selection");
+            dialogs::error(
+                Some(&self.window),
+                "The clipboard is not available",
+                "Another application is holding it. Try again in a moment.",
+            );
+            return;
+        }
+
+        // Moves the entry to the top of the history and refreshes its age.
+        if let Err(err) = self.deps.store.borrow().touch(id) {
+            // Cosmetic only — the clipboard already has the content, which is
+            // what the user asked for.
+            tracing::warn!(id, error = %err, "could not update the entry's last-used time");
+        }
+
+        let stay_open = !close
+            || self.settings().advanced.activate_action == ActivateAction::CopyAndStayOpen;
+        if stay_open {
+            self.refresh();
+        } else {
+            self.hide();
+        }
+    }
+
+    fn toggle_pin(self: &Rc<Self>, id: i64) {
+        let current = {
+            let store = self.deps.store.borrow();
+            store.get(id).ok().flatten().map(|i| i.is_pinned)
+        };
+        let Some(pinned) = current else {
+            return;
+        };
+
+        if let Err(err) = self.deps.store.borrow().set_pinned(id, !pinned) {
+            tracing::error!(id, error = %err, "could not change the pinned state");
+            return;
+        }
+        self.refresh();
+    }
+
+    /// Edit a text entry (§13) and, on "Save and copy", put the result on the
+    /// clipboard — the §61 acceptance flow.
+    fn edit(self: &Rc<Self>, id: i64) {
+        // Load and drop the borrow before the dialog's nested main loop.
+        let loaded = {
+            let store = self.deps.store.borrow();
+            store.get(id).ok().flatten().map(|item| {
+                let text = store.full_text(id).unwrap_or_else(|_| item.preview.clone());
+                (item, text)
+            })
+        };
+        let Some((item, text)) = loaded else {
+            return;
+        };
+
+        let outcome = dialogs::edit_text(&self.window, &item, &text);
+        let (edited, also_copy) = match outcome {
+            dialogs::EditOutcome::Save(text) => (text, false),
+            dialogs::EditOutcome::SaveAndCopy(text) => (text, true),
+            dialogs::EditOutcome::Cancel => return,
+        };
+
+        if edited == text {
+            // Nothing changed; still honour an explicit copy.
+            if also_copy {
+                self.restore(id, true);
+            }
+            return;
+        }
+
+        let preview_len = self.settings().appearance.preview_length as usize;
+        if let Err(err) = self.deps.store.borrow_mut().update_text(id, &edited, preview_len) {
+            tracing::error!(id, error = %err, "could not save the edited entry");
+            dialogs::error(
+                Some(&self.window),
+                "The edit could not be saved",
+                "The history database rejected the change. The original entry is intact.",
+            );
+            return;
+        }
+
+        if also_copy {
+            // Re-read, because saving changed the content hash and the
+            // suppression has to match the new one.
+            self.restore(id, true);
+        } else {
+            self.refresh();
+        }
+    }
+
+    fn view(self: &Rc<Self>, id: i64) {
+        let loaded = {
+            let store = self.deps.store.borrow();
+            store.payload_of(id)
+        };
+        let Ok((item, payload)) = loaded else {
+            dialogs::error(
+                Some(&self.window),
+                "That entry could not be read",
+                "Its stored data is missing or unreadable.",
+            );
+            return;
+        };
+        dialogs::view_content(&self.window, &item, &payload);
+    }
+
+    fn delete(self: &Rc<Self>, id: i64) {
+        if let Err(err) = self.deps.store.borrow_mut().delete(id) {
+            tracing::error!(id, error = %err, "could not delete the entry");
+            return;
+        }
+        self.invalidate_thumbnails();
+        self.refresh();
+    }
+
+    /// "Clear all", behind a confirmation (§14, §36).
+    fn clear_all(self: &Rc<Self>) {
+        let pinned_count = {
+            let store = self.deps.store.borrow();
+            store.pinned().map(|p| p.len()).unwrap_or(0)
+        };
+
+        let body = if pinned_count == 0 {
+            "Every entry in the history will be deleted. This cannot be undone.".to_string()
+        } else if pinned_count == 1 {
+            "Every unpinned entry will be deleted. Your 1 pinned entry will be kept. \
+             This cannot be undone."
+                .to_string()
+        } else {
+            format!(
+                "Every unpinned entry will be deleted. Your {pinned_count} pinned entries \
+                 will be kept. This cannot be undone."
+            )
+        };
+
+        if !dialogs::confirm(&self.window, "Clear clipboard history?", &body, "Clear", true) {
+            return;
+        }
+
+        // Pinned entries survive: §12 says a pin outlives cleanup, and a
+        // "Clear all" that silently discarded them would be a trap.
+        match self.deps.store.borrow_mut().clear(false) {
+            Ok(removed) => tracing::info!(removed, "history cleared"),
+            Err(err) => {
+                tracing::error!(error = %err, "could not clear the history");
+                dialogs::error(
+                    Some(&self.window),
+                    "The history could not be cleared",
+                    "The database reported an error. Nothing has been deleted.",
+                );
+                return;
+            }
+        }
+
+        self.invalidate_thumbnails();
+        self.refresh();
+    }
+
+    // ---- keyboard ------------------------------------------------------------
+
+    /// Keyboard handling (§7, §40). Everything reachable by mouse is reachable
+    /// from here.
+    fn on_key(self: &Rc<Self>, event: &gdk::EventKey) -> glib::Propagation {
+        use gdk::keys::constants as key;
+
+        let keyval = event.keyval();
+        let state = event.state();
+        let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+
+        match keyval {
+            key::Escape => {
+                self.hide();
+                glib::Propagation::Stop
+            }
+            // Ctrl+F is the documented way back to the search field.
+            key::f | key::F if ctrl => {
+                self.search.grab_focus();
+                glib::Propagation::Stop
+            }
+            // From the search field, Down moves into the list rather than
+            // moving the text cursor.
+            key::Down if self.search.has_focus() => {
+                self.focus_list();
+                glib::Propagation::Stop
+            }
+            key::Delete if !self.search.has_focus() => {
+                if let Some(id) = self.selected_id() {
+                    self.delete(id);
+                }
+                glib::Propagation::Stop
+            }
+            // Ctrl+Delete works from the search field too, where plain Delete
+            // has to keep editing text.
+            key::Delete if ctrl => {
+                if let Some(id) = self.selected_id() {
+                    self.delete(id);
+                }
+                glib::Propagation::Stop
+            }
+            key::p | key::P if ctrl => {
+                if let Some(id) = self.selected_id() {
+                    self.toggle_pin(id);
+                }
+                glib::Propagation::Stop
+            }
+            key::Return | key::KP_Enter if self.search.has_focus() => {
+                // Enter in the search field activates the top match, which is
+                // the whole point of type-to-filter.
+                if let Some(id) = self.selected_id() {
+                    self.restore(id, true);
+                }
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    }
+
+    fn focus_list(&self) {
+        let shown = self.shown.borrow();
+        if let Some(index) = shown.iter().position(|id| *id != i64::MIN) {
+            if let Some(row) = self.list.row_at_index(index as i32) {
+                self.list.select_row(Some(&row));
+                row.grab_focus();
+            }
+        }
+    }
+
+    /// Id of the selected row, skipping section headings.
+    fn selected_id(&self) -> Option<i64> {
+        let row = self.list.selected_row()?;
+        let index = row.index();
+        self.shown
+            .borrow()
+            .get(index as usize)
+            .copied()
+            .filter(|id| *id != i64::MIN)
+    }
+
+    pub fn window(&self) -> &gtk::Window {
+        &self.window
+    }
+
+    /// Show the About dialog with the live session and backend (§37).
+    pub fn show_about(&self) {
+        dialogs::about(Some(&self.window), &self.deps.session, &self.deps.backend);
+    }
+}
+
+/// Give the window an alpha channel so the CSS rounded corners and shadow are
+/// not drawn against an opaque rectangle.
+///
+/// Only when a compositor is actually running: without one, a transparent
+/// window background renders as black, which would look far worse than square
+/// corners. The stylesheet branches on `cm-no-composite` to drop the shadow
+/// margin in that case, so the panel still looks deliberate.
+fn enable_transparency(window: &gtk::Window) {
+    // Disambiguated: `screen()` exists on several traits in GTK's prelude.
+    let Some(screen) = gtk::prelude::GtkWindowExt::screen(window) else {
+        return;
+    };
+    if !screen.is_composited() {
+        window.style_context().add_class("cm-no-composite");
+        return;
+    }
+    if let Some(visual) = screen.rgba_visual() {
+        window.set_visual(Some(&visual));
+        window.set_app_paintable(true);
+        window.style_context().add_class("cm-popup");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_page_size_is_large_enough_to_fill_a_tall_panel() {
+        // Rows are ~56px; the tallest configurable panel is 1000px, so ~18 rows
+        // are visible. A page well above that keeps scrolling smooth without
+        // building widgets for a 100k history (§46).
+        assert!(PAGE >= 100);
+    }
+
+    #[test]
+    fn the_thumbnail_cache_is_bounded() {
+        // Unbounded would be a slow leak for a heavy screenshot user.
+        assert!(THUMB_CACHE_LIMIT > 0 && THUMB_CACHE_LIMIT <= 256);
+    }
+
+    #[test]
+    fn section_headings_use_a_sentinel_no_real_row_can_collide_with() {
+        // Row ids are SQLite rowids, which start at 1 and are positive, so
+        // i64::MIN can never be a real entry.
+        assert!(i64::MIN < 0);
+    }
+}
