@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Application
+Name=Clipboard Manager
+GenericName=Clipboard History
+Comment=Keep a searchable history of what you copy
+Exec=/usr/bin/clipboard-manager
+TryExec=/usr/bin/clipboard-manager
+Icon=clipboard-manager
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;history;copy;paste;clip;
+StartupNotify=false
+SingleMainWindow=true
+
+# Launching a second time raises the running instance rather than starting a
+# rival daemon, so a double-click on the menu entry is harmless (§25).
+Actions=Toggle;Settings;
+
+[Desktop Action Toggle]
+Name=Open Clipboard History
+Exec=/usr/bin/clipboard-manager toggle
+
+[Desktop Action Settings]
+Name=Settings
+Exec=/usr/bin/clipboard-manager settings

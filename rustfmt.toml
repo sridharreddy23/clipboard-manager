@@ -1,0 +1,11 @@
+# Formatting, chosen to match how the code is already written rather than to
+# reformat it wholesale.
+#
+# `max_width = 100` because the comments in this project carry a lot of the
+# reasoning and 100 columns reads better than 80 for prose-heavy doc comments
+# while still fitting a split editor pane.
+max_width = 100
+
+# Keep short `impl` bodies and match arms on one line, which is how the many
+# small accessor methods here are written.
+use_small_heuristics = "Max"

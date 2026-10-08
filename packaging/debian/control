@@ -1,0 +1,33 @@
+Package: clipboard-manager
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: sridhar <sridharsri789tej@gmail.com>
+Homepage: https://github.com/sridharreddy23/clipboard-manager
+Depends: @DEPENDS@
+Recommends: libnotify-bin
+Installed-Size: @SIZE@
+Description: Clipboard history for Linux desktops
+ A clipboard manager that keeps a searchable history of what you copy, in the
+ style of the Windows 10/11 clipboard flyout. Press Ctrl+` to open a compact
+ panel near the pointer, type to filter, and press Return to put an entry back
+ on the clipboard.
+ .
+ Features:
+  * Text, multi-line text, URLs, images and file selections
+  * Instant fuzzy search that stays fast on a large history
+  * Pinned entries that survive cleanup, restart and reboot
+  * Per-entry edit, view, copy, pin and delete
+  * Configurable history size and retention
+  * Light, dark and system themes
+ .
+ It works on X11 and on Wayland, under GNOME, KDE Plasma, Xfce, Cinnamon and
+ MATE. On Wayland it uses the wlr-data-control protocol where the compositor
+ provides it, and falls back to reading the X11 clipboard through Xwayland on
+ GNOME, which mutter keeps synchronised.
+ .
+ Clipboard data never leaves the machine. There is no network code, no
+ telemetry and no account; the systemd unit runs with PrivateNetwork=true. The
+ history is stored in the user's own directory with owner-only permissions, and
+ clipboard contents are never written to the log.

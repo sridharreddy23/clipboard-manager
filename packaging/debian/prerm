@@ -1,0 +1,44 @@
+#!/bin/sh
+# Pre-removal for clipboard-manager.
+#
+# Runs as root. It cannot stop a user's service — `systemctl --user` needs that
+# user's session bus, which root does not have — and it must not delete anyone's
+# clipboard history, because removing a package is not consent to destroy data
+# (§47). So this only warns.
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        # Only on an actual removal; an upgrade will restart the new binary.
+        if [ "$1" = "remove" ]; then
+            cat <<'EOF'
+
+clipboard-manager is being removed.
+
+Each user who enabled the background service should run, as themselves:
+
+    clipboard-manager uninstall
+
+That stops the service and removes their autostart entry and keyboard
+shortcut binding.
+
+Clipboard history is NOT deleted by removing this package. It lives in:
+
+    ~/.local/share/clipboard-manager
+
+Delete that directory to remove the stored history as well.
+
+EOF
+        fi
+        ;;
+
+    failed-upgrade)
+        ;;
+
+    *)
+        echo "prerm called with unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

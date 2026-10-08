@@ -1,0 +1,181 @@
+# Continuous integration (§44).
+#
+# The matrix is containers, not GitHub runner images, because the support window
+# spans Debian 11 to Ubuntu 26.04 and GitHub only offers a couple of Ubuntu
+# images at a time. Containers also pin the exact GTK and glibc the resulting
+# .deb will declare dependencies against.
+#
+# Each release builds, tests and packages independently: a .deb built on 26.04
+# cannot satisfy its dependencies on 20.04 (the t64 rename), so there is one
+# artifact per target rather than one universal package.
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep peak memory down: CI runners are small, and linking this dependency
+  # tree at full parallelism is what kills them.
+  CARGO_BUILD_JOBS: 2
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Ubuntu 20.04", image: "ubuntu:20.04" }
+          - { name: "Ubuntu 22.04", image: "ubuntu:22.04" }
+          - { name: "Ubuntu 24.04", image: "ubuntu:24.04" }
+          - { name: "Ubuntu 26.04", image: "ubuntu:26.04" }
+          - { name: "Debian 11", image: "debian:11" }
+          - { name: "Debian 12", image: "debian:12" }
+          - { name: "Debian 13", image: "debian:13" }
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgtk-3-dev libdbus-1-dev \
+            curl ca-certificates git \
+            dpkg-dev fakeroot gzip \
+            xvfb
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          # rustup rather than the distribution's rustc: Debian 11 ships 1.48,
+          # which predates the 2021 edition this project uses. Pinned to a
+          # known-good version so a new release cannot break CI on its own.
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain 1.85.1 --profile minimal \
+                       --component clippy,rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          rustc --version
+          cargo --version
+          pkg-config --modversion gtk+-3.0
+
+      - name: Build
+        run: cargo build --all-targets --locked
+
+      - name: Test
+        run: cargo test --locked
+
+      # Clippy and rustfmt are advisory for now, and that is a deliberate,
+      # temporary state rather than an oversight.
+      #
+      # Neither tool is installed on the machine this project was written on
+      # (`cargo clippy` and `cargo fmt` both report "no such command"), so
+      # their output has never been seen. Asserting them as gates would mean
+      # claiming a check that was never run, and would turn the first CI run
+      # red on style rather than on anything that matters.
+      #
+      # Once someone has run `cargo clippy --fix` and `cargo fmt` over the tree
+      # one time, delete the two `continue-on-error` lines below. They should
+      # be gates; they just cannot honestly be gates yet.
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Formatting
+        continue-on-error: true
+        run: cargo fmt --all --check
+
+      # The live-session tests are #[ignore]d because they take over the real
+      # clipboard. Under Xvfb there is no real session to disturb, so this is
+      # the one place they can run unattended — and it is the only automated
+      # check that the X11 backend really captures a selection.
+      - name: Live platform tests under Xvfb
+        run: |
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x900x24' \
+            cargo test --locked --test platform_live -- \
+              --ignored --nocapture --test-threads=1
+
+      - name: Build the .deb
+        run: |
+          cargo build --release --locked
+          ./scripts/build-deb.sh --no-build
+
+      - name: Verify the package installs and runs
+        run: |
+          deb=$(ls packaging/build/*.deb)
+          # `apt install ./file.deb` resolves dependencies; this is also the
+          # command the README tells users to run, so it is what gets tested.
+          apt-get install -y "$deb"
+          clipboard-manager --version
+          man --warnings -l /usr/share/man/man1/clipboard-manager.1.gz >/dev/null
+          # A clean uninstall matters as much as a clean install.
+          apt-get remove -y clipboard-manager
+
+      - name: Name the artifact after its target
+        id: slug
+        run: |
+          slug=$(echo "${{ matrix.name }}" | tr ' .' '-' | tr '[:upper:]' '[:lower:]')
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipboard-manager-${{ steps.slug.outputs.slug }}
+          path: packaging/build/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Attach packages to the release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Rename each .deb to include its target release
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            target=$(basename "$dir" | sed 's/^clipboard-manager-//')
+            for deb in "$dir"*.deb; do
+              [ -e "$deb" ] || continue
+              base=$(basename "$deb" .deb)
+              cp "$deb" "release/${base}_${target}.deb"
+            done
+          done
+          ls -la release/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.deb
+          draft: true
+          body: |
+            Built from `${{ github.ref_name }}`.
+
+            Download the package built for **your** distribution release. The
+            GTK and GLib package names differ across the support window (the
+            64-bit `time_t` rename), so a package from one release will not
+            satisfy its dependencies on another.
+
+            Install with:
+
+            ```
+            sudo apt install ./clipboard-manager_<version>_<arch>_<release>.deb
+            clipboard-manager install      # as your user, no sudo
+            ```
+
+            The shortcut to open the clipboard history is **Ctrl + `**.

@@ -1,0 +1,193 @@
+.TH CLIPBOARD-MANAGER 1 "2026-10-08" "clipboard-manager 1.0.0" "User Commands"
+.SH NAME
+clipboard-manager \- clipboard history for Linux desktops
+.SH SYNOPSIS
+.B clipboard-manager
+.RI [ OPTIONS ]
+.RI [ COMMAND ]
+.SH DESCRIPTION
+.B clipboard-manager
+keeps a searchable history of everything you copy, in the style of the
+Windows 10/11 clipboard flyout. Run with no command it becomes the background
+service for your session; run with a command it sends that command to the
+running service and exits.
+.PP
+Press
+.B Ctrl+`
+(Ctrl together with the backtick/grave key above Tab) to open a compact panel
+near the pointer. Type to filter, use the arrow keys to move, and press Return
+to put an entry back on the clipboard. The panel then closes and you paste with
+your own paste key.
+.PP
+Selecting an entry
+.B only
+places it on the clipboard. No keystrokes are injected into other
+applications.
+.SH COMMANDS
+.TP
+.B toggle
+Open the panel if it is closed, close it if it is open. This is the command to
+bind to a key if your desktop cannot register the shortcut automatically.
+.TP
+.B show
+Open the panel.
+.TP
+.B hide
+Close the panel.
+.TP
+.BR clear " [" \-\-include\-pinned ]
+Delete history. Pinned entries are kept unless
+.B \-\-include\-pinned
+is given.
+.TP
+.B pause
+Stop recording new entries. Existing history remains readable.
+.TP
+.B resume
+Start recording again.
+.TP
+.B status
+Print the session type, the monitoring backend, whether the keyboard shortcut
+is actually registered, and how much history is stored. Exits non-zero if the
+shortcut is
+.B not
+working, so it is usable in a script.
+.TP
+.BI search " QUERY"
+Print matching entries, one per line, as tab-separated
+.IR id ,
+.IR type ,
+.I age
+and preview.
+.TP
+.B settings
+Open the settings window.
+.TP
+.B quit
+Shut the background service down.
+.TP
+.BI export " FILE"
+Write the history to a JSON file.
+.B This file contains your clipboard history in readable form, including any
+.B passwords or tokens you have copied.
+Refuses to run while the service holds the database; use Settings → Advanced,
+or stop the service first.
+.TP
+.BI import " FILE"
+Merge a previously exported file into the history.
+.TP
+.B install
+Install the systemd user service and autostart entry for the current user, and
+try to register the keyboard shortcut. Do
+.B not
+run this with sudo.
+.TP
+.B uninstall
+Remove them again. Clipboard history is left in place.
+.SH OPTIONS
+.TP
+.B \-\-debug
+Log at debug level. Clipboard contents are never logged, at any level.
+.TP
+.BR \-h ", " \-\-help
+Print help.
+.TP
+.BR \-V ", " \-\-version
+Print the version.
+.SH KEYBOARD
+Inside the panel:
+.TP
+.B Ctrl+F
+Focus the search field.
+.TP
+.BR Up / Down
+Move between entries.
+.TP
+.B Return
+Put the selected entry on the clipboard.
+.TP
+.B Delete
+Delete the selected entry.
+.TP
+.B Ctrl+P
+Pin or unpin the selected entry.
+.TP
+.B Escape
+Close the panel.
+.SH FILES
+.TP
+.I ~/.config/clipboard-manager/config.toml
+Settings. Written by the settings window; safe to edit by hand.
+.TP
+.I ~/.local/share/clipboard-manager/database.sqlite
+The history database. Mode 0600 in a 0700 directory.
+.TP
+.I ~/.local/share/clipboard-manager/blobs/
+Content-addressed storage for images and other large payloads.
+.TP
+.I ~/.config/systemd/user/clipboard-manager.service
+The user service, written by
+.BR "clipboard-manager install" .
+.TP
+.I $XDG_RUNTIME_DIR/clipboard-manager/
+The per-user command socket and instance lock. Not reachable by other users.
+.SH ENVIRONMENT
+.TP
+.B WAYLAND_DISPLAY\fR, \fBDISPLAY
+Used to detect the session type and choose a monitoring backend.
+.TP
+.B XDG_CURRENT_DESKTOP
+Used only to pick the shortcut mechanism and tray behaviour.
+.SH PLATFORM NOTES
+On
+.B X11
+the shortcut is grabbed directly from the X server and the source application
+of a copy can be identified, so the exclusion list works.
+.PP
+On
+.B Wayland
+an application cannot grab a key or read the clipboard without a protocol for
+it. Where the compositor provides
+.I zwlr_data_control_manager_v1
+(KDE Plasma 5.25 and later, Sway, Hyprland, Wayfire, river) that is used. The
+protocol carries no application identity, so the exclusion list has
+.B no effect
+there; the password-manager hint still works. On
+.B GNOME
+Wayland, where mutter provides no such protocol, history is read from the X11
+clipboard through Xwayland, which mutter keeps synchronised in both directions.
+This needs no configuration change and does not require running the desktop
+under Xwayland.
+.PP
+Run
+.B clipboard-manager status
+to see which backend is in use and any limitation that applies.
+.SH PRIVACY
+Clipboard data is never transmitted, uploaded or sent to telemetry, and the
+application works entirely offline. The systemd unit sets
+.I PrivateNetwork=true
+and
+.IR IPAddressDeny=any .
+Clipboard contents are never written to the log.
+.PP
+Entries that a password manager marks as a password are skipped. Under X11,
+applications can additionally be excluded by name in Settings → Privacy.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+The command failed, no service is running, or
+.B status
+found the keyboard shortcut not registered.
+.SH SEE ALSO
+.BR journalctl (1),
+.BR systemctl (1)
+.PP
+Logs:
+.B journalctl \-\-user \-u clipboard-manager
+.SH BUGS
+https://github.com/sridharreddy23/clipboard-manager/issues
+.SH AUTHOR
+sridhar

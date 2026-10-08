@@ -1,0 +1,59 @@
+#!/bin/sh
+# Post-installation for clipboard-manager.
+#
+# This runs as root, once, at install time. It therefore does **not** touch
+# anything under a user's home directory and does not start the service: the
+# daemon is a per-user service (§28), and root has no business creating
+# root-owned files in someone's $HOME or guessing which user wants it running.
+#
+# Each user enables it themselves with `clipboard-manager install`, or simply by
+# launching it from the application menu. The message below says so.
+set -e
+
+case "$1" in
+    configure)
+        # Refresh the caches the desktop reads, so the menu entry and icon
+        # appear without a logout. All three are optional: a minimal system may
+        # not have them, and the package must still install cleanly.
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+        if command -v update-mime-database >/dev/null 2>&1; then
+            update-mime-database /usr/share/mime 2>/dev/null || true
+        fi
+
+        cat <<'EOF'
+
+clipboard-manager is installed.
+
+To start it for your own user account (do NOT use sudo):
+
+    clipboard-manager install
+
+That registers the background service and the autostart entry for you, and
+tries to bind the keyboard shortcut.
+
+The shortcut to open the clipboard history is:
+
+    Ctrl + `      (Ctrl and the backtick key, above Tab)
+
+Then check it worked:
+
+    clipboard-manager status
+
+EOF
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0
