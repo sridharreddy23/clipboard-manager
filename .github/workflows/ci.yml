@@ -42,48 +42,63 @@ jobs:
           - { name: "Debian 13", image: "debian:13" }
 
     steps:
-      # Debian releases past end-of-life are removed from deb.debian.org and
-      # moved to archive.debian.org, so a stock container's sources 404. The
-      # archive also stops refreshing Release files, which trips apt's
-      # Valid-Until check. Bullseye is in that state, and trixie will be one
-      # day, so this is keyed on reachability rather than on a version list.
-      - name: Repoint end-of-life Debian releases at the archive
-        run: |
-          set -eux
-          . /etc/os-release
-          if [ "${ID:-}" = "debian" ]; then
-            if ! apt-get update -qq 2>/dev/null; then
-              echo "deb.debian.org is incomplete for ${VERSION_CODENAME}; using archive.debian.org"
-              for list in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
-                [ -e "$list" ] || continue
-                sed -i \
-                  -e 's|http://deb.debian.org|http://archive.debian.org|g' \
-                  -e 's|http://security.debian.org|http://archive.debian.org|g' \
-                  -e '/-updates/d' \
-                  "$list"
-              done
-              # deb822 format, used by trixie onwards.
-              for src in /etc/apt/sources.list.d/*.sources; do
-                [ -e "$src" ] || continue
-                sed -i \
-                  -e 's|http://deb.debian.org|http://archive.debian.org|g' \
-                  -e 's|http://security.debian.org|http://archive.debian.org|g' \
-                  "$src"
-              done
-              echo 'Acquire::Check-Valid-Until "false";' \
-                > /etc/apt/apt.conf.d/99-archive-no-valid-until
-            fi
-          fi
+      # Debian releases past end-of-life have their packages moved off
+      # deb.debian.org to archive.debian.org. Note that `apt-get update`
+      # still *succeeds* there -- the Release and Packages indices are
+      # served, it is the pool files that 404 at download time -- so this
+      # cannot be detected up front and has to be a fallback after a failed
+      # install. The archive also stops refreshing Release files, which trips
+      # apt's Valid-Until check.
+      - name: Note the apt fallback
+        run: echo "If the dependency install fails on Debian, it retries against archive.debian.org."
 
       - name: Install build dependencies
         run: |
+          set -eu
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential pkg-config libgtk-3-dev libdbus-1-dev \
-            curl ca-certificates git \
-            dpkg-dev fakeroot gzip \
-            xvfb
+
+          # `xauth` is not optional: `xvfb-run` invokes it to build the
+          # authority file and exits with "error: xauth command not found"
+          # without it, which is how the live platform tests were skipped
+          # silently on the first CI run.
+          PACKAGES="build-essential pkg-config libgtk-3-dev libdbus-1-dev
+                    curl ca-certificates git
+                    dpkg-dev fakeroot gzip
+                    xvfb xauth"
+
+          install_deps() {
+            apt-get update
+            # shellcheck disable=SC2086
+            apt-get install -y --no-install-recommends $PACKAGES
+          }
+
+          repoint_to_archive() {
+            echo "Retrying against archive.debian.org"
+            for list in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+              [ -e "$list" ] || continue
+              sed -i -e 's|http://deb.debian.org|http://archive.debian.org|g' \
+                     -e 's|http://security.debian.org|http://archive.debian.org|g' \
+                     -e '/-updates/d' "$list"
+            done
+            # deb822 format, used from trixie onwards.
+            for src in /etc/apt/sources.list.d/*.sources; do
+              [ -e "$src" ] || continue
+              sed -i -e 's|http://deb.debian.org|http://archive.debian.org|g' \
+                     -e 's|http://security.debian.org|http://archive.debian.org|g' "$src"
+            done
+            echo 'Acquire::Check-Valid-Until "false";' \
+              > /etc/apt/apt.conf.d/99-archive-no-valid-until
+          }
+
+          if ! install_deps; then
+            . /etc/os-release
+            if [ "${ID:-}" = "debian" ]; then
+              repoint_to_archive
+              install_deps
+            else
+              exit 1
+            fi
+          fi
 
       - uses: actions/checkout@v4
 
@@ -146,7 +161,12 @@ jobs:
 
       - name: Verify the package installs and runs
         run: |
-          deb=$(ls packaging/build/*.deb)
+          # The leading ./ is required. Without it apt treats the argument as
+          # a package *name* and fails with "Unable to locate package
+          # packaging/build" -- which is exactly what the first CI run did.
+          # An absolute path is used so this cannot depend on the cwd.
+          deb="$(readlink -f "$(ls packaging/build/*.deb | head -1)")"
+          echo "Installing $deb"
           # `apt install ./file.deb` resolves dependencies; this is also the
           # command the README tells users to run, so it is what gets tested.
           apt-get install -y "$deb"
