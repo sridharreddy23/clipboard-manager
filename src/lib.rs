@@ -16,8 +16,9 @@
 //! | [`storage`] | SQLite history, blob store, retention and maintenance |
 //! | [`privacy`] | What must never be stored |
 //! | [`clipboard`] | Monitoring, normalisation and the capture pipeline |
+//! | [`platform`] | Session detection and the X11/Wayland monitoring backends |
 //!
-//! Nothing below [`clipboard`] knows about the display server, and nothing
+//! Nothing below [`platform`] knows about the display server, and nothing
 //! below [`storage`] performs any I/O outside the data directory.
 
 pub mod clipboard;
@@ -25,6 +26,7 @@ pub mod config;
 pub mod logging;
 pub mod model;
 pub mod paths;
+pub mod platform;
 pub mod privacy;
 pub mod search;
 pub mod storage;

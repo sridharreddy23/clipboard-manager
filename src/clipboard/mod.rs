@@ -122,6 +122,14 @@ pub trait ClipboardBackend: Send {
 /// Builds a backend. Called once per supervision attempt.
 pub type BackendFactory = Box<dyn Fn() -> Result<Box<dyn ClipboardBackend>> + Send>;
 
+/// Interrupts a backend that is parked waiting for display-server events.
+///
+/// A backend registers one with [`MonitorContext::set_waker`] during startup.
+/// It must be safe to call from another thread and after the backend has
+/// already exited — in practice each backend uses a self-pipe or its event
+/// queue's own wake primitive.
+pub type Waker = Box<dyn Fn() + Send + Sync>;
+
 /// Everything a backend needs in order to hand a selection to the pipeline.
 pub struct MonitorContext {
     settings: SharedSettings,
@@ -135,6 +143,8 @@ pub struct MonitorContext {
     /// Hash of the last clipping we accepted, so an application that re-asserts
     /// ownership of unchanged content does not cost a database transaction.
     last_hash: Mutex<Option<String>>,
+    /// Set by the backend so shutdown can interrupt its blocking read.
+    waker: Mutex<Option<Waker>>,
 }
 
 impl MonitorContext {
@@ -163,6 +173,38 @@ impl MonitorContext {
         &self.blobs
     }
 
+    /// Register a way to interrupt this backend's blocking read.
+    ///
+    /// Backends should call this before entering their event loop. Without it,
+    /// a backend parked on `poll(2)` stays parked until the process exits,
+    /// which is harmless but makes shutdown untestable.
+    pub fn set_waker(&self, waker: Waker) {
+        if let Ok(mut slot) = self.waker.lock() {
+            *slot = Some(waker);
+        }
+    }
+
+    fn wake(&self) {
+        if let Ok(slot) = self.waker.lock() {
+            if let Some(waker) = slot.as_ref() {
+                waker();
+            }
+        }
+    }
+
+    /// Cheap pre-check: is this selection worth examining at all?
+    ///
+    /// A backend may call this to skip the round trips needed to enumerate a
+    /// selection's MIME types when the answer is already no — for example
+    /// PRIMARY, which changes on every mouse drag and is off by default.
+    /// [`Self::wants`] applies the same rule authoritatively, so this is an
+    /// optimisation and never the only gate.
+    pub fn interested(&self, selection: Selection) -> bool {
+        let settings = self.settings();
+        !settings.privacy.paused
+            && (selection == Selection::Clipboard || settings.clipboard.monitor_primary)
+    }
+
     /// Decide whether to retrieve this selection at all, and with which target.
     ///
     /// Called *before* the payload is read, which matters: when a password
@@ -175,14 +217,10 @@ impl MonitorContext {
         offered: &[String],
         app: Option<&model::AppIdentity>,
     ) -> Option<ChosenTarget> {
+        if !self.interested(selection) {
+            return None;
+        }
         let settings = self.settings();
-
-        if settings.privacy.paused {
-            return None;
-        }
-        if selection == Selection::Primary && !settings.clipboard.monitor_primary {
-            return None;
-        }
 
         // Content heuristics need the text, so they are applied in `submit`.
         if let Some(block) = privacy::check(&settings.privacy, offered, app, None) {
@@ -288,6 +326,20 @@ impl MonitorContext {
         self.send(MonitorEvent::Clip(Box::new(clip)));
     }
 
+    /// Report that a selection was deliberately not retrieved.
+    ///
+    /// Lets a backend decline a transfer it can tell in advance is pointless —
+    /// in practice one that the display server has already told us is larger
+    /// than the configured limit — while keeping the reason and the decision
+    /// about whether to notify in one place (§33, §34).
+    pub fn reject(&self, rejection: &Rejection) {
+        tracing::debug!(reason = rejection.reason(), "clipping not retrieved");
+        self.send(MonitorEvent::Dropped {
+            reason: rejection.reason().to_string(),
+            notify: rejection.user_message(),
+        });
+    }
+
     /// Report a health change.
     pub fn report(&self, backend: &'static str, health: Health) {
         self.send(MonitorEvent::Status(BackendStatus { backend, health }));
@@ -367,6 +419,7 @@ impl Monitor {
             stop: Arc::clone(&stop),
             suppressed: Arc::new(Mutex::new(Vec::new())),
             last_hash: Mutex::new(None),
+            waker: Mutex::new(None),
         });
 
         let thread_ctx = Arc::clone(&ctx);
@@ -401,15 +454,15 @@ impl Monitor {
 
     /// Ask the monitor to stop.
     ///
-    /// Deliberately does **not** join: a backend is parked in a blocking read
-    /// on its display server connection, and interrupting that portably would
-    /// mean a second connection per backend for no benefit — the thread holds
-    /// no lock the shutdown path needs, and the process is about to exit. What
-    /// matters is that no further events are accepted, which closing the
-    /// channel and setting the flag both guarantee.
+    /// Sets the stop flag, closes the event channel and interrupts the
+    /// backend's blocking read via the waker it registered. Deliberately does
+    /// **not** join: the thread holds no lock the shutdown path needs, and a
+    /// backend without a waker would otherwise stall shutdown until its next
+    /// display-server event.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         self.events.close();
+        self.ctx.wake();
     }
 }
 
@@ -520,6 +573,7 @@ mod tests {
             stop: Arc::clone(&stop),
             suppressed: Arc::new(Mutex::new(Vec::new())),
             last_hash: Mutex::new(None),
+            waker: Mutex::new(None),
         });
         Harness { _tmp: tmp, ctx, events: rx, stop }
     }
@@ -833,6 +887,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             suppressed: Arc::new(Mutex::new(Vec::new())),
             last_hash: Mutex::new(None),
+            waker: Mutex::new(None),
         };
 
         let offered = vec!["image/png".to_string()];

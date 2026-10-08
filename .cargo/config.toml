@@ -1,0 +1,24 @@
+# Build settings that keep a desktop build from taking the desktop down.
+#
+# Ubuntu ships this drop-in as stock configuration:
+#
+#   /usr/lib/systemd/system/user@.service.d/10-oomd-user-service-defaults.conf
+#       [Service]
+#       ManagedOOMMemoryPressure=kill
+#       ManagedOOMMemoryPressureLimit=50%
+#
+# which authorises systemd-oomd to kill `user@<uid>.service` — the whole
+# graphical session — when sustained PSI memory pressure on that cgroup exceeds
+# 50%. The result is a logout, and SIGKILL for every descendant including cargo.
+#
+# This project is unusually good at provoking that: it links GTK3, a bundled
+# SQLite, zbus and two display-server protocol stacks, and `cargo test` links
+# several test binaries at once. Capping concurrency bounds the number of
+# simultaneous link peaks; the `[profile.dev]` settings in Cargo.toml bound the
+# size of each one.
+#
+# Raise `jobs` freely on a machine with memory to spare — it costs nothing but
+# wall-clock time here.
+
+[build]
+jobs = 4

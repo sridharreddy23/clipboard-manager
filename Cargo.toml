@@ -72,6 +72,21 @@ unicode-normalization = "0.1"
 [dev-dependencies]
 tempfile = "3"
 
+# Debug builds keep line tables rather than full DWARF. With GTK3, a bundled
+# SQLite, zbus and two protocol stacks linked in, full debug info made each test
+# binary ~79 MB, and linking several of those at once drove enough memory
+# pressure to get the whole desktop session killed by systemd-oomd (see
+# `.cargo/config.toml` for the mechanism).
+#
+# What this keeps: panics, backtraces and `RUST_BACKTRACE=1` still resolve to
+# file and line. What it gives up: a debugger can no longer inspect local
+# variable values. That is the right trade for a project whose debugging is done
+# through `--debug` logging and tests; set `debug = true` locally if you need a
+# full gdb session.
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
