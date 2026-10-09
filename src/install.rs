@@ -263,9 +263,86 @@ fn write_text(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Stop a daemon that is running a *different* binary from this one.
+///
+/// Without this, upgrading does nothing visible. `systemctl --user restart`
+/// cannot replace a daemon that was started by hand — the incumbent holds the
+/// single-instance lock, so the new copy raises its window and exits cleanly
+/// by design (§25). The old binary keeps serving, and the user reasonably
+/// concludes the upgrade did not work. That happened on a real install, and
+/// cost an hour of chasing a bug that had already been fixed.
+///
+/// Compared by inode rather than by version string, so a rebuild at the same
+/// version is still detected.
+fn stop_outdated_daemon() -> Result<bool> {
+    if !crate::ipc::is_running() {
+        return Ok(false);
+    }
+
+    // Ask who is running, and what from.
+    let running_exe = match crate::ipc::send(&crate::ipc::Request::Status) {
+        Ok(crate::ipc::Response::Status(report)) => {
+            std::fs::read_link(format!("/proc/{}/exe", report.pid)).ok()
+        }
+        // Something answered the socket but not usefully. Restarting is the
+        // safe assumption: at worst we restart an already-current daemon.
+        _ => None,
+    };
+
+    let ours = std::fs::read_link("/proc/self/exe").ok();
+    let same = match (&running_exe, &ours) {
+        (Some(running), Some(ours)) => same_file(running, ours),
+        _ => false,
+    };
+
+    if same {
+        return Ok(false);
+    }
+
+    println!("Stopping the running clipboard-manager so the new version takes over...");
+    let _ = crate::ipc::send(&crate::ipc::Request::Quit);
+
+    // Wait for the lock to actually be released, rather than assuming.
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if !crate::ipc::is_running() {
+            return Ok(true);
+        }
+    }
+
+    anyhow::bail!(
+        "the running clipboard-manager did not shut down. Stop it manually and run \
+         this again:\n    pkill -f '^{}$'",
+        ours.map(|p| p.display().to_string()).unwrap_or_else(|| "clipboard-manager".into())
+    )
+}
+
+/// Do two paths refer to the same file? Compared by device and inode, so a
+/// rebuilt binary at the same path is still recognised as different.
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
 /// Enable and start the unit. `Ok(false)` means no systemd user session, which
 /// is a supported configuration rather than a failure.
 fn enable_service() -> Result<bool> {
+    // Before anything else: a stale daemon would keep the lock and make the
+    // restart below a no-op.
+    match stop_outdated_daemon() {
+        Ok(true) => println!("Stopped."),
+        Ok(false) => {}
+        Err(err) => {
+            // Not fatal — the files are written and the next login will pick
+            // up the new binary — but the user must be told why it did not
+            // take effect now.
+            println!("Warning: {err}");
+        }
+    }
+
     if !has_systemd_user_session() {
         return Ok(false);
     }
@@ -370,6 +447,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_binary_is_recognised_as_the_same_file_through_a_different_path() {
+        // Inode comparison, so /proc/<pid>/exe and the install path resolve to
+        // the same file, while a rebuilt binary at the same path does not.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("binary");
+        std::fs::write(&real, b"#!/bin/true\n").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(same_file(&real, &link), "a symlink must resolve to the same file");
+
+        let other = dir.path().join("other");
+        std::fs::write(&other, b"#!/bin/true\n").unwrap();
+        assert!(
+            !same_file(&real, &other),
+            "identical contents at a different inode are still a different file"
+        );
+    }
+
+    #[test]
+    fn comparing_against_a_missing_path_is_not_a_match() {
+        // A dead /proc/<pid>/exe must not read as "same", or an upgrade would
+        // skip the restart.
+        assert!(!same_file(Path::new("/nonexistent/a"), Path::new("/nonexistent/b")));
     }
 
     #[test]
