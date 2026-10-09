@@ -263,15 +263,29 @@ pub fn error(parent: Option<&gtk::Window>, heading: &str, body: &str) {
 }
 
 /// The About dialog (§37).
-pub fn about(parent: Option<&gtk::Window>, session: &str, backend: &str) {
+///
+/// `caveat` is the platform limitation the monitoring backend reported, if
+/// any. This is where it lives now that the panel no longer carries a
+/// permanent banner — §20 requires the limitation to be stated plainly
+/// somewhere the user can find it, and About is where one looks to find out
+/// what the application is doing.
+pub fn about(
+    parent: Option<&gtk::Window>,
+    session: &str,
+    backend: &str,
+    caveat: Option<&str>,
+) {
     let dialog = gtk::AboutDialog::new();
     dialog.set_transient_for(parent);
     dialog.set_modal(true);
     dialog.set_program_name("Clipboard Manager");
     dialog.set_version(Some(env!("CARGO_PKG_VERSION")));
-    dialog.set_comments(Some(&format!(
-        "Clipboard history for Linux desktops.\n\nSession: {session}\nMonitoring: {backend}"
-    )));
+    let mut comments =
+        format!("Clipboard history for Linux desktops.\n\nSession: {session}\nMonitoring: {backend}");
+    if let Some(caveat) = caveat {
+        comments.push_str(&format!("\n\nOn this system: {caveat}"));
+    }
+    dialog.set_comments(Some(&comments));
     dialog.set_license_type(gtk::License::Gpl30);
     dialog.set_website(Some("https://github.com/sridharreddy23/clipboard-manager"));
     dialog.set_logo_icon_name(Some("edit-paste"));

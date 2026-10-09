@@ -517,6 +517,7 @@ impl Core {
             }),
             session: self.session.describe(),
             backend: self.monitor.backend_name().to_string(),
+            caveat: self.caveat.clone(),
         });
         window.present();
         *slot = Some(window);

@@ -37,6 +37,8 @@ pub struct Deps {
     pub on_shortcut_changed: Rc<dyn Fn(String)>,
     pub session: String,
     pub backend: String,
+    /// Platform limitation from the monitoring backend, for the About dialog.
+    pub caveat: Option<String>,
 }
 
 pub struct SettingsWindow {
@@ -612,7 +614,12 @@ impl SettingsWindow {
         {
             let this = Rc::clone(self);
             about.connect_clicked(move |_| {
-                dialogs::about(Some(&this.window), &this.deps.session, &this.deps.backend);
+                dialogs::about(
+                    Some(&this.window),
+                    &this.deps.session,
+                    &this.deps.backend,
+                    this.deps.caveat.as_deref(),
+                );
             });
         }
         page.add_raw(&about);

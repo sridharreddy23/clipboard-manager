@@ -80,7 +80,15 @@ pub struct Deps {
     /// Tells the monitor to ignore the next clipping with this hash, so
     /// restoring an entry does not come straight back as a new one.
     pub suppress: Rc<dyn Fn(&str)>,
-    /// Platform limitation to show once, if the chosen backend has one.
+    /// Platform limitation reported by the chosen backend, if any.
+    ///
+    /// Shown in the About dialog and by `clipboard-manager status`, not in the
+    /// panel. §20 asks for platform limitations to be documented clearly, and
+    /// they are — in About, in `status`, in the Privacy tab where it affects a
+    /// setting, and in the README. A permanent banner in a compact panel the
+    /// user opens dozens of times a day is nagging, not documenting: it costs
+    /// a row of list space forever to tell someone something they learned the
+    /// first time.
     pub caveat: Option<String>,
     pub session: String,
     pub backend: String,
@@ -88,7 +96,6 @@ pub struct Deps {
 
 pub struct Popup {
     window: gtk::Window,
-    frame: gtk::Box,
     search: gtk::SearchEntry,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
@@ -212,7 +219,6 @@ impl Popup {
 
         let popup = Rc::new(Self {
             window,
-            frame,
             search,
             list,
             scroller,
@@ -230,27 +236,8 @@ impl Popup {
             })),
         });
 
-        popup.insert_caveat_banner();
         popup.wire(&settings_button);
         popup
-    }
-
-    /// Show the banner for a platform limitation, if the backend reported one.
-    ///
-    /// §20 and §56: a limitation is stated plainly in the UI rather than left
-    /// for the user to discover when the exclusion list quietly does nothing.
-    fn insert_caveat_banner(&self) {
-        let Some(caveat) = &self.deps.caveat else {
-            return;
-        };
-        let banner = gtk::Label::new(Some(caveat));
-        banner.style_context().add_class("cm-banner");
-        banner.set_line_wrap(true);
-        banner.set_xalign(0.0);
-        banner.set_max_width_chars(44);
-        self.frame.add(&banner);
-        // Position 1: directly under the header, above the list.
-        self.frame.reorder_child(&banner, 1);
     }
 
     fn wire(self: &Rc<Self>, settings_button: &gtk::Button) {
@@ -905,10 +892,16 @@ impl Popup {
         self.clear_all();
     }
 
-    /// Show the About dialog with the live session and backend (§37).
+    /// Show the About dialog with the live session, backend and any platform
+    /// limitation (§37).
     pub fn show_about(&self) {
         let _modal = self.modal();
-        dialogs::about(Some(&self.window), &self.deps.session, &self.deps.backend);
+        dialogs::about(
+            Some(&self.window),
+            &self.deps.session,
+            &self.deps.backend,
+            self.deps.caveat.as_deref(),
+        );
     }
 }
 
