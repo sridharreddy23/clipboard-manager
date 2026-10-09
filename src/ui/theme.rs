@@ -96,8 +96,18 @@ pub fn apply(widget: &impl IsA<gtk::Widget>, resolved: Resolved) {
     // Also set the GTK-wide dark preference, which is what makes stock widgets
     // we do not style ourselves (scrollbars, text selection, the settings
     // window's own chrome) match.
+    //
+    // Only when it actually changes. Setting it unconditionally emits a
+    // `notify::gtk-application-prefer-dark-theme` on every call, and GTK
+    // responds by reloading the theme and re-realizing widgets application
+    // wide. `apply` runs on every panel open, so that was a full theme reload
+    // each time -- which dropped the panel's keyboard focus a few hundred
+    // milliseconds after it had been granted.
     if let Some(gtk_settings) = gtk::Settings::default() {
-        gtk_settings.set_gtk_application_prefer_dark_theme(resolved == Resolved::Dark);
+        let want_dark = resolved == Resolved::Dark;
+        if gtk_settings.is_gtk_application_prefer_dark_theme() != want_dark {
+            gtk_settings.set_gtk_application_prefer_dark_theme(want_dark);
+        }
     }
 }
 

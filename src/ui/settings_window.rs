@@ -508,6 +508,19 @@ impl SettingsWindow {
             },
         );
 
+        page.add_switch(
+            "Close when clicking outside",
+            "Off by default because the panel cannot reliably keep keyboard focus on \
+             some Wayland desktops, where this caused it to close itself a moment after \
+             opening. Escape, choosing an entry, or pressing the shortcut again always \
+             close it.",
+            settings.appearance.close_on_focus_loss,
+            {
+                let this = Rc::clone(self);
+                move |on| this.update(|s| s.appearance.close_on_focus_loss = on)
+            },
+        );
+
         page.section("Behaviour");
         let activate = gtk::ComboBoxText::new();
         activate.append(Some("close"), "Copy and close the panel");

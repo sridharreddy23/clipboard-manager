@@ -214,6 +214,27 @@ pub struct Appearance {
     pub show_timestamps: bool,
     /// Thumbnail edge length for image rows.
     pub thumbnail_size: i32,
+    /// Close the panel when it loses keyboard focus, i.e. on a click outside.
+    ///
+    /// **Off by default, and that default is the result of a real bug.** The
+    /// panel cannot reliably hold focus under GNOME Wayland: measured on a
+    /// live session it gains focus ~30 ms after opening and then loses it
+    /// again, unprompted, between 0.6 and 2.6 seconds later — sometimes
+    /// flapping back and forth. With this on, the panel closed itself a second
+    /// after opening, which users experience as "sometimes the shortcut
+    /// doesn't work", because the panel flashes up and vanishes and the next
+    /// press re-opens it.
+    ///
+    /// Neither a grace period after mapping nor a debounce with a re-check
+    /// fixed it, because the focus loss is real and persistent rather than a
+    /// transient wobble. Changing the window type hint and clearing
+    /// `skip_taskbar` made no difference either.
+    ///
+    /// So dismissal is explicit by default: Escape, choosing an entry, or
+    /// pressing the shortcut again. Those are reliable on every platform.
+    /// Users on a desktop where click-away works — X11 sessions, where this
+    /// behaved correctly throughout — can switch it on.
+    pub close_on_focus_loss: bool,
 }
 
 impl Default for Appearance {
@@ -227,6 +248,7 @@ impl Default for Appearance {
             preview_length: 220,
             show_timestamps: true,
             thumbnail_size: 64,
+            close_on_focus_loss: false,
         }
     }
 }

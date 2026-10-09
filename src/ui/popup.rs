@@ -65,6 +65,40 @@ const _: () = assert!(THUMB_CACHE_LIMIT > 0 && THUMB_CACHE_LIMIT <= 256);
 /// Gap between the pointer and the panel's edge.
 const CURSOR_MARGIN: i32 = 12;
 
+/// How long after opening the panel ignores a focus-out.
+///
+/// The panel dismisses itself when it loses focus, which is how click-outside
+/// works. But a window does not reliably *hold* focus for the first instant
+/// after `present()`: under GNOME Wayland, focus-stealing prevention and the
+/// ordinary map/focus handshake produce a transient focus-out, and the panel
+/// would hide itself a few milliseconds after opening.
+///
+/// The user-visible symptom was "sometimes Ctrl+` doesn't work" — the panel
+/// flashed and vanished, and because it had hidden itself the *next* press
+/// opened it, so it felt like every other press worked. Measured on a live
+/// GNOME Wayland session: three of six presses self-dismissed.
+///
+/// 400 ms is long enough to cover the handshake on a loaded machine and short
+/// enough that a deliberate click away still dismisses the panel immediately
+/// — nobody opens this and clicks elsewhere inside half a second.
+const FOCUS_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How long the panel must stay unfocused before it dismisses itself.
+///
+/// Focus-out alone is not a reliable dismissal signal here. Measured on a live
+/// GNOME Wayland session, an open panel gains focus after ~30 ms and then
+/// *flaps*: lost at 1.8 s, regained at 2.6 s, lost at 3.1 s, with no user
+/// input at all. Hiding on the first focus-out therefore closed the panel by
+/// itself a second or two after opening — which the user experiences as
+/// "sometimes Ctrl+` doesn't work", because the panel flashed up and vanished,
+/// and the next press then re-opened it.
+///
+/// So a focus-out only *arms* a timer. If focus comes back, the timer is
+/// cancelled; when it fires, the real focus state is re-checked before
+/// hiding. A genuine click elsewhere keeps focus elsewhere and the panel
+/// closes after this delay, which is short enough to feel immediate.
+const FOCUS_SETTLE: std::time::Duration = std::time::Duration::from_millis(350);
+
 /// Stands in for a section heading in the parallel `shown` list.
 ///
 /// SQLite rowids start at 1 and are always positive, so no real entry can
@@ -111,6 +145,14 @@ pub struct Popup {
     /// Set while `refresh` is rebuilding, so the row-selection signal it
     /// triggers does not fire an activation.
     rebuilding: Cell<bool>,
+    /// When the panel was last shown, for [`FOCUS_GRACE`].
+    shown_at: Cell<Option<std::time::Instant>>,
+    /// Generation counter for the pending focus-out timer.
+    ///
+    /// Bumped whenever focus returns or the panel is shown or hidden, so a
+    /// timer armed by an earlier focus-out becomes a no-op instead of closing
+    /// a panel the user is still using.
+    focus_generation: Cell<u64>,
     /// How many modal dialogs this panel currently has open.
     ///
     /// A counter rather than a flag because dialogs nest: an error dialog can
@@ -137,6 +179,8 @@ impl Popup {
         window.set_skip_pager_hint(true);
         window.set_keep_above(true);
         window.set_type_hint(gdk::WindowTypeHint::Dialog);
+        window.set_accept_focus(true);
+        window.set_focus_on_map(true);
         window.set_icon_name(Some("edit-paste"));
 
         enable_transparency(&window);
@@ -230,6 +274,8 @@ impl Popup {
             shown: RefCell::new(Vec::new()),
             thumbs: RefCell::new(HashMap::new()),
             rebuilding: Cell::new(false),
+            shown_at: Cell::new(None),
+            focus_generation: Cell::new(0),
             modal_depth: Cell::new(0),
             on_open_settings: RefCell::new(Rc::new(|| {
                 tracing::warn!("the settings button was pressed before it was wired up");
@@ -294,17 +340,28 @@ impl Popup {
         {
             let this = Rc::clone(self);
             self.window.connect_focus_out_event(move |_, _| {
-                // Not while one of our own dialogs is up. Opening a modal
-                // dialog takes focus away from the panel, which used to fire
-                // this handler and hide the panel -- withdrawing the dialog's
-                // transient parent. mutter then never presented the dialog,
-                // while `dialog.run()` sat in a nested main loop waiting for a
-                // response that could not arrive. The whole UI froze, and it
-                // did so for every dialog: Clear all, Edit, View, and errors.
                 if this.modal_depth.get() > 0 {
                     return glib::Propagation::Proceed;
                 }
-                this.hide();
+                // Ignore the wobble that follows `present()`; see `FOCUS_GRACE`.
+                if let Some(shown) = this.shown_at.get() {
+                    if shown.elapsed() < FOCUS_GRACE {
+                        return glib::Propagation::Proceed;
+                    }
+                }
+                if !this.settings().appearance.close_on_focus_loss {
+                    return glib::Propagation::Proceed;
+                }
+                this.arm_focus_dismiss();
+                glib::Propagation::Proceed
+            });
+        }
+
+        {
+            let this = Rc::clone(self);
+            self.window.connect_focus_in_event(move |_, _| {
+                // Focus came back, so any armed dismissal was a flap.
+                this.focus_generation.set(this.focus_generation.get() + 1);
                 glib::Propagation::Proceed
             });
         }
@@ -324,6 +381,7 @@ impl Popup {
     }
 
     pub fn toggle(self: &Rc<Self>) {
+        tracing::debug!(visible = self.is_visible(), "toggle requested");
         if self.is_visible() {
             self.hide();
         } else {
@@ -331,7 +389,35 @@ impl Popup {
         }
     }
 
+    /// Arm the delayed focus dismissal. See [`FOCUS_SETTLE`].
+    fn arm_focus_dismiss(self: &Rc<Self>) {
+        let generation = self.focus_generation.get() + 1;
+        self.focus_generation.set(generation);
+
+        let this = Rc::clone(self);
+        glib::timeout_add_local_once(FOCUS_SETTLE, move || {
+            // Superseded by a focus-in, a show, or a hide.
+            if this.focus_generation.get() != generation {
+                return;
+            }
+            if this.modal_depth.get() > 0 || !this.window.is_visible() {
+                return;
+            }
+            // Re-check reality rather than trusting the event that armed us.
+            if this.window.has_toplevel_focus() {
+                return;
+            }
+            tracing::debug!("panel stayed unfocused; hiding");
+            this.hide();
+        });
+    }
+
     pub fn hide(&self) {
+        // Cleared so a stale stamp cannot grant a grace period to the *next*
+        // focus-out after the panel has been reopened by some other path, and
+        // bumped so any armed dismissal is cancelled.
+        self.shown_at.set(None);
+        self.focus_generation.set(self.focus_generation.get() + 1);
         self.window.hide();
     }
 
@@ -355,8 +441,13 @@ impl Popup {
         self.sync_empty_state();
         self.position_near_pointer();
 
+        // Stamped before `present()`, so the grace period covers the whole
+        // map/focus handshake rather than starting after it.
+        self.shown_at.set(Some(std::time::Instant::now()));
+        self.focus_generation.set(self.focus_generation.get() + 1);
         self.window.present();
         self.search.grab_focus();
+        tracing::debug!(visible = self.window.is_visible(), "panel shown");
     }
 
     /// Place the panel beside the pointer, kept inside the monitor's work area.
