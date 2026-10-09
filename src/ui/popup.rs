@@ -104,6 +104,11 @@ pub struct Popup {
     /// Set while `refresh` is rebuilding, so the row-selection signal it
     /// triggers does not fire an activation.
     rebuilding: Cell<bool>,
+    /// How many modal dialogs this panel currently has open.
+    ///
+    /// A counter rather than a flag because dialogs nest: an error dialog can
+    /// be raised from inside the edit flow.
+    modal_depth: Cell<u32>,
     /// Opens the settings window.
     ///
     /// Settable after construction because the popup and the settings window
@@ -219,6 +224,7 @@ impl Popup {
             shown: RefCell::new(Vec::new()),
             thumbs: RefCell::new(HashMap::new()),
             rebuilding: Cell::new(false),
+            modal_depth: Cell::new(0),
             on_open_settings: RefCell::new(Rc::new(|| {
                 tracing::warn!("the settings button was pressed before it was wired up");
             })),
@@ -301,6 +307,16 @@ impl Popup {
         {
             let this = Rc::clone(self);
             self.window.connect_focus_out_event(move |_, _| {
+                // Not while one of our own dialogs is up. Opening a modal
+                // dialog takes focus away from the panel, which used to fire
+                // this handler and hide the panel -- withdrawing the dialog's
+                // transient parent. mutter then never presented the dialog,
+                // while `dialog.run()` sat in a nested main loop waiting for a
+                // response that could not arrive. The whole UI froze, and it
+                // did so for every dialog: Clear all, Edit, View, and errors.
+                if this.modal_depth.get() > 0 {
+                    return glib::Propagation::Proceed;
+                }
                 this.hide();
                 glib::Propagation::Proceed
             });
@@ -592,6 +608,7 @@ impl Popup {
             Ok(pair) => pair,
             Err(err) => {
                 tracing::error!(id, error = %err, "could not load the entry to restore");
+                let _modal = self.modal();
                 dialogs::error(
                     Some(&self.window),
                     "That entry could not be read",
@@ -608,6 +625,7 @@ impl Popup {
 
         if let Err(err) = selection::restore(&item, payload) {
             tracing::error!(id, error = %err, "could not take the clipboard selection");
+            let _modal = self.modal();
             dialogs::error(
                 Some(&self.window),
                 "The clipboard is not available",
@@ -663,7 +681,10 @@ impl Popup {
             return;
         };
 
-        let outcome = dialogs::edit_text(&self.window, &item, &text);
+        let outcome = {
+            let _modal = self.modal();
+            dialogs::edit_text(&self.window, &item, &text)
+        };
         let (edited, also_copy) = match outcome {
             dialogs::EditOutcome::Save(text) => (text, false),
             dialogs::EditOutcome::SaveAndCopy(text) => (text, true),
@@ -681,6 +702,7 @@ impl Popup {
         let preview_len = self.settings().appearance.preview_length as usize;
         if let Err(err) = self.deps.store.borrow_mut().update_text(id, &edited, preview_len) {
             tracing::error!(id, error = %err, "could not save the edited entry");
+            let _modal = self.modal();
             dialogs::error(
                 Some(&self.window),
                 "The edit could not be saved",
@@ -704,6 +726,7 @@ impl Popup {
             store.payload_of(id)
         };
         let Ok((item, payload)) = loaded else {
+            let _modal = self.modal();
             dialogs::error(
                 Some(&self.window),
                 "That entry could not be read",
@@ -711,6 +734,7 @@ impl Popup {
             );
             return;
         };
+        let _modal = self.modal();
         dialogs::view_content(&self.window, &item, &payload);
     }
 
@@ -743,7 +767,11 @@ impl Popup {
             )
         };
 
-        if !dialogs::confirm(&self.window, "Clear clipboard history?", &body, "Clear", true) {
+        let confirmed = {
+            let _modal = self.modal();
+            dialogs::confirm(&self.window, "Clear clipboard history?", &body, "Clear", true)
+        };
+        if !confirmed {
             return;
         }
 
@@ -753,6 +781,7 @@ impl Popup {
             Ok(removed) => tracing::info!(removed, "history cleared"),
             Err(err) => {
                 tracing::error!(error = %err, "could not clear the history");
+                let _modal = self.modal();
                 dialogs::error(
                     Some(&self.window),
                     "The history could not be cleared",
@@ -850,6 +879,17 @@ impl Popup {
         &self.window
     }
 
+    /// Mark a modal dialog as open for as long as the returned guard lives.
+    ///
+    /// Every `dialogs::*` call from this module must be wrapped in this, or the
+    /// panel hides itself out from under the dialog and the UI locks up. RAII
+    /// rather than a set/clear pair because these paths return early all over
+    /// the place, and a GTK signal handler can panic.
+    fn modal(&self) -> ModalGuard<'_> {
+        self.modal_depth.set(self.modal_depth.get() + 1);
+        ModalGuard { depth: &self.modal_depth }
+    }
+
     /// Wire up the settings button. Called once by the daemon after it has
     /// built both windows.
     pub fn set_on_open_settings(&self, open: Rc<dyn Fn()>) {
@@ -867,7 +907,21 @@ impl Popup {
 
     /// Show the About dialog with the live session and backend (§37).
     pub fn show_about(&self) {
+        let _modal = self.modal();
         dialogs::about(Some(&self.window), &self.deps.session, &self.deps.backend);
+    }
+}
+
+/// Keeps [`Popup::modal_depth`] raised while a dialog is open.
+struct ModalGuard<'a> {
+    depth: &'a Cell<u32>,
+}
+
+impl Drop for ModalGuard<'_> {
+    fn drop(&mut self) {
+        // `saturating_sub` so an unbalanced drop can never wrap to u32::MAX and
+        // leave the panel permanently unable to dismiss itself.
+        self.depth.set(self.depth.get().saturating_sub(1));
     }
 }
 
